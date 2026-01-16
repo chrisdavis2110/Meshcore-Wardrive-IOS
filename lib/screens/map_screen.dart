@@ -12,6 +12,7 @@ import '../services/aggregation_service.dart';
 import '../services/lora_companion_service.dart';
 import '../services/database_service.dart';
 import '../services/upload_service.dart';
+import '../services/settings_service.dart';
 import '../utils/geohash_utils.dart';
 import 'package:geohash_plus/geohash_plus.dart' as geohash;
 import 'package:usb_serial/usb_serial.dart';
@@ -30,11 +31,12 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.12';
+  static const String appVersion = '1.0.15';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
   final UploadService _uploadService = UploadService();
+  final SettingsService _settingsService = SettingsService();
   
   bool _isTracking = false;
   int _sampleCount = 0;
@@ -44,6 +46,7 @@ class _MapScreenState extends State<MapScreen> {
   String _colorMode = 'quality';
   bool _showSamples = false;
   bool _showGpsSamples = true; // Show GPS-only samples (null pingSuccess)
+  bool _showCoverage = true; // Show coverage boxes
   bool _showEdges = true;
   bool _showRepeaters = true;
   bool _autoPingEnabled = false;
@@ -79,6 +82,9 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _initialize() async {
+    // Load saved settings
+    await _loadSettings();
+    
     // Subscribe to battery updates
     final loraService = _locationService.loraCompanion;
     _batterySubscription = loraService.batteryStream.listen((percent) {
@@ -128,6 +134,34 @@ class _MapScreenState extends State<MapScreen> {
     _updateTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       _loadSamples();
     });
+  }
+  
+  Future<void> _loadSettings() async {
+    final showSamples = await _settingsService.getShowSamples();
+    final showGpsSamples = await _settingsService.getShowGpsSamples();
+    final showCoverage = await _settingsService.getShowCoverage();
+    final showEdges = await _settingsService.getShowEdges();
+    final showRepeaters = await _settingsService.getShowRepeaters();
+    final colorMode = await _settingsService.getColorMode();
+    final pingInterval = await _settingsService.getPingInterval();
+    final coveragePrecision = await _settingsService.getCoveragePrecision();
+    final ignoredPrefix = await _settingsService.getIgnoredRepeaterPrefix();
+    
+    setState(() {
+      _showSamples = showSamples;
+      _showGpsSamples = showGpsSamples;
+      _showCoverage = showCoverage;
+      _showEdges = showEdges;
+      _showRepeaters = showRepeaters;
+      _colorMode = colorMode;
+      _pingIntervalMeters = pingInterval;
+      _coveragePrecision = coveragePrecision;
+      _ignoredRepeaterPrefix = ignoredPrefix;
+    });
+    
+    // Apply to services
+    _locationService.setPingInterval(pingInterval);
+    _locationService.loraCompanion.setIgnoredRepeaterPrefix(ignoredPrefix);
   }
 
   Future<void> _getCurrentLocation() async {
@@ -439,7 +473,7 @@ class _MapScreenState extends State<MapScreen> {
           subdomains: isDarkMode ? const ['a', 'b', 'c', 'd'] : const [],
           userAgentPackageName: 'com.meshcore.wardrive',
         ),
-        ..._buildCoverageLayers(),
+        if (_showCoverage) ..._buildCoverageLayers(),
         if (_showSamples) _buildSampleLayer(),
         if (_showEdges) _buildEdgeLayer(),
         if (_showRepeaters) _buildRepeaterLayer(),
@@ -523,13 +557,13 @@ class _MapScreenState extends State<MapScreen> {
       
       return Marker(
         point: sample.position,
-        width: 16,
-        height: 16,
+        width: 12,
+        height: 12,
         child: GestureDetector(
           onTap: () => _showSampleInfo(sample),
           child: Container(
-            width: 8,
-            height: 8,
+            width: 6,
+            height: 6,
             decoration: BoxDecoration(
               color: markerColor.withValues(alpha: 0.7),
               shape: BoxShape.circle,
@@ -1013,11 +1047,13 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     if (selected != null) {
+      final interval = double.parse(selected);
       setState(() {
-        _pingIntervalMeters = double.parse(selected);
+        _pingIntervalMeters = interval;
       });
       // Update location service ping interval
       _locationService.setPingInterval(_pingIntervalMeters);
+      await _settingsService.setPingInterval(interval);
       _showSnackBar('Ping interval: ${_getPingIntervalDescription()}');
     }
   }
@@ -1080,9 +1116,11 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     if (selected != null) {
+      final precision = int.parse(selected);
       setState(() {
-        _coveragePrecision = int.parse(selected);
+        _coveragePrecision = precision;
       });
+      await _settingsService.setCoveragePrecision(precision);
       // Reload samples with new precision
       await _loadSamples();
       _showSnackBar('Coverage resolution: ${_getCoverageResolutionDescription()}');
@@ -1130,10 +1168,12 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     if (confirmed == true) {
+      final prefix = controller.text.isEmpty ? null : controller.text;
       setState(() {
-        _ignoredRepeaterPrefix = controller.text.isEmpty ? null : controller.text;
+        _ignoredRepeaterPrefix = prefix;
       });
       _locationService.loraCompanion.setIgnoredRepeaterPrefix(_ignoredRepeaterPrefix);
+      await _settingsService.setIgnoredRepeaterPrefix(prefix);
       _showSnackBar('Repeater prefix updated');
     }
   }
@@ -1176,32 +1216,58 @@ class _MapScreenState extends State<MapScreen> {
             ),
             const SizedBox(height: 16),
             SwitchListTile(
+              title: const Text('Show Coverage Boxes'),
+              value: _showCoverage,
+              onChanged: (value) async {
+                setState(() {
+                  _showCoverage = value;
+                });
+                await _settingsService.setShowCoverage(value);
+                Navigator.pop(context);
+              },
+            ),
+            SwitchListTile(
               title: const Text('Show Samples'),
               value: _showSamples,
-              onChanged: (value) {
+              onChanged: (value) async {
                 setState(() {
                   _showSamples = value;
                 });
+                await _settingsService.setShowSamples(value);
                 Navigator.pop(context);
               },
             ),
             SwitchListTile(
               title: const Text('Show Edges'),
               value: _showEdges,
-              onChanged: (value) {
+              onChanged: (value) async {
                 setState(() {
                   _showEdges = value;
                 });
+                await _settingsService.setShowEdges(value);
                 Navigator.pop(context);
               },
             ),
             SwitchListTile(
               title: const Text('Show Repeaters'),
               value: _showRepeaters,
-              onChanged: (value) {
+              onChanged: (value) async {
                 setState(() {
                   _showRepeaters = value;
                 });
+                await _settingsService.setShowRepeaters(value);
+                Navigator.pop(context);
+              },
+            ),
+            SwitchListTile(
+              title: const Text('Show GPS Samples'),
+              subtitle: const Text('Show blue GPS-only markers'),
+              value: _showGpsSamples,
+              onChanged: (value) async {
+                setState(() {
+                  _showGpsSamples = value;
+                });
+                await _settingsService.setShowGpsSamples(value);
                 Navigator.pop(context);
               },
             ),
@@ -1227,6 +1293,16 @@ class _MapScreenState extends State<MapScreen> {
                   _scanForRepeaters();
                 },
               ),
+            if (_loraConnected)
+              ListTile(
+                title: const Text('Refresh Contact List'),
+                subtitle: const Text('Update repeater names from device'),
+                leading: const Icon(Icons.refresh),
+                onTap: () {
+                  Navigator.pop(context);
+                  _refreshContacts();
+                },
+              ),
             ListTile(
               title: const Text('Color Mode'),
               trailing: DropdownButton<String>(
@@ -1235,10 +1311,11 @@ class _MapScreenState extends State<MapScreen> {
                   DropdownMenuItem(value: 'quality', child: Text('Quality')),
                   DropdownMenuItem(value: 'age', child: Text('Age')),
                 ],
-                onChanged: (value) {
+                onChanged: (value) async {
                   setState(() {
                     _colorMode = value!;
                   });
+                  await _settingsService.setColorMode(value!);
                   Navigator.pop(context);
                 },
               ),
@@ -1401,6 +1478,23 @@ class _MapScreenState extends State<MapScreen> {
     return Colors.red;
   }
   
+  Future<void> _refreshContacts() async {
+    if (!_loraConnected) {
+      _showSnackBar('Connect LoRa device first');
+      return;
+    }
+    
+    _showSnackBar('Refreshing contact list...');
+    
+    // Request full contact list from device
+    await _locationService.loraCompanion.refreshContactList();
+    
+    // Give it a moment to process
+    await Future.delayed(const Duration(seconds: 2));
+    
+    _showSnackBar('Contact list updated');
+  }
+  
   Future<void> _scanForRepeaters() async {
     if (!_loraConnected) {
       _showSnackBar('Connect LoRa device first');
@@ -1485,6 +1579,31 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
   
+  String? _getRepeaterName(String? repeaterId) {
+    if (repeaterId == null) return null;
+    
+    // If it's a 2-char prefix, try to expand it first
+    String? fullId = repeaterId;
+    if (repeaterId.length == 2) {
+      fullId = _locationService.loraCompanion.matchRepeaterPrefix(repeaterId);
+      if (fullId == null) {
+        // No match found, return the 2-char prefix as-is
+        return repeaterId;
+      }
+    }
+    
+    // First check discovered repeaters list
+    final repeater = _repeaters.firstWhere(
+      (r) => r.id == fullId,
+      orElse: () => Repeater(id: fullId!, position: const LatLng(0, 0), timestamp: DateTime.now()),
+    );
+    if (repeater.name != null) return repeater.name;
+    
+    // Fall back to checking LoRa service's contact cache
+    final loraRepeater = _locationService.loraCompanion.getRepeaterLocation(fullId!);
+    return loraRepeater?.name ?? fullId; // Return full ID if no name
+  }
+  
   void _showSampleInfo(Sample sample) {
     final timestamp = DateFormat('MMM d, yyyy HH:mm:ss').format(sample.timestamp);
     final hasSignalData = sample.rssi != null || sample.snr != null;
@@ -1493,6 +1612,10 @@ class _MapScreenState extends State<MapScreen> {
         : sample.pingSuccess == false 
             ? '❌ Failed' 
             : '📍 GPS Only';
+    
+    // Get repeater name if available (sample.path holds repeater/node ID)
+    final repeaterName = sample.path != null ? _getRepeaterName(sample.path) : null;
+    final repeaterDisplay = repeaterName ?? sample.path ?? 'Unknown';
     
     showDialog(
       context: context,
@@ -1513,15 +1636,18 @@ class _MapScreenState extends State<MapScreen> {
             const SizedBox(height: 8),
             Text('Lat: ${sample.position.latitude.toStringAsFixed(6)}'),
             Text('Lon: ${sample.position.longitude.toStringAsFixed(6)}'),
-            if (sample.path != null || hasSignalData)
+            if (sample.path != null) ...[
               const Divider(height: 16),
-            if (sample.path != null)
+              const SizedBox(height: 8),
               Row(
                 children: [
                   const Text('Repeater: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                  Text(sample.path!, style: const TextStyle(fontFamily: 'monospace')),
+                  Expanded(child: Text(repeaterDisplay, style: const TextStyle(fontFamily: 'monospace'))),
                 ],
               ),
+            ],
+            if (hasSignalData)
+              const Divider(height: 16),
             if (hasSignalData)
               const SizedBox(height: 8),
             if (sample.rssi != null)

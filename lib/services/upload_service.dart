@@ -46,7 +46,7 @@ class UploadService {
   }
   
   /// Upload all samples to the configured API
-  Future<UploadResult> uploadAllSamples() async {
+  Future<UploadResult> uploadAllSamples({Map<String, String>? repeaterNames}) async {
     try {
       final apiUrl = await getApiUrl();
       final samples = await _db.getAllSamples();
@@ -58,6 +58,7 @@ class UploadService {
       // Convert samples to JSON
       final samplesJson = samples.map((sample) => {
         'nodeId': sample.path ?? 'Unknown', // path contains the repeater/node ID
+        'repeaterName': repeaterNames?[sample.path] ?? sample.path ?? 'Unknown', // Include friendly name
         'latitude': sample.position.latitude,
         'longitude': sample.position.longitude,
         'rssi': sample.rssi,
@@ -106,7 +107,7 @@ class UploadService {
   }
   
   /// Upload only samples since last upload
-  Future<UploadResult> uploadNewSamples() async {
+  Future<UploadResult> uploadNewSamples({Map<String, String>? repeaterNames}) async {
     try {
       final apiUrl = await getApiUrl();
       final lastUpload = await getLastUploadTime();
@@ -122,6 +123,7 @@ class UploadService {
       // Convert samples to JSON
       final samplesJson = samples.map((sample) => {
         'nodeId': sample.path ?? 'Unknown', // path contains the repeater/node ID
+        'repeaterName': repeaterNames?[sample.path] ?? sample.path ?? 'Unknown', // Include friendly name
         'latitude': sample.position.latitude,
         'longitude': sample.position.longitude,
         'rssi': sample.rssi,

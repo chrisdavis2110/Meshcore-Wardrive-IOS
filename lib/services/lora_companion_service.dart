@@ -60,6 +60,7 @@ class LoRaCompanionService {
   // State
   final _pingResultController = StreamController<PingResult>.broadcast();
   final _pendingPings = <String, Completer<PingResult>>{};
+  final Map<String, List<String>> _pingEchoes = {}; // Track multiple echoes per ping
   int? _batteryPercent;
   final _batteryController = StreamController<int?>.broadcast();
   
@@ -76,6 +77,10 @@ class LoRaCompanionService {
   Completer<List<Repeater>>? _scanCompleter;
   String? _pendingScanMessage; // Track scan broadcast messages
   Map<String, Repeater> _knownRepeaters = {}; // Map of repeater ID -> location from internet map
+  
+  // Track recent advertisements for echo correlation
+  final Map<String, DateTime> _recentAdvertisements = {}; // repeaterId -> last seen time
+  final Duration _advertCorrelationWindow = const Duration(minutes: 5); // Window for correlating adverts with echoes
   
   // Throttle contact lookups to avoid dumping full list repeatedly
   final Map<String, DateTime> _lastContactRequestAt = {}; // keyPrefix -> time
@@ -438,9 +443,48 @@ class LoRaCompanionService {
 
   List<Repeater> get discoveredRepeaters => List.unmodifiable(_discoveredRepeaters);
   
+  /// Match a 2-character hex prefix to full repeater ID(s)
+  /// Returns the first matching repeater from known repeaters
+  String? matchRepeaterPrefix(String prefix) {
+    if (prefix.length != 2) return null;
+    
+    final upperPrefix = prefix.toUpperCase();
+    
+    // Check known repeaters first
+    for (final repeaterId in _knownRepeaters.keys) {
+      if (repeaterId.toUpperCase().startsWith(upperPrefix)) {
+        return repeaterId;
+      }
+    }
+    
+    // Check contact cache
+    for (final repeaterId in _repeaterContactCache.keys) {
+      if (repeaterId.toUpperCase().startsWith(upperPrefix)) {
+        return repeaterId;
+      }
+    }
+    
+    // Check discovered repeaters
+    for (final repeater in _discoveredRepeaters) {
+      if (repeater.id.toUpperCase().startsWith(upperPrefix)) {
+        return repeater.id;
+      }
+    }
+    
+    return null; // No match found
+  }
+  
   /// Get repeater location by ID (from cache or fetch)
+  /// If repeaterId is 2 characters, attempt to match it to a full ID first
   Repeater? getRepeaterLocation(String repeaterId) {
-    return _knownRepeaters[repeaterId];
+    // If it's a 2-char prefix, try to expand it first
+    String? fullId = repeaterId;
+    if (repeaterId.length == 2) {
+      fullId = matchRepeaterPrefix(repeaterId);
+      if (fullId == null) return null; // No match found
+    }
+    
+    return _knownRepeaters[fullId] ?? _repeaterContactCache[fullId];
   }
   
   // Internet map API methods removed - MQTT dependencies
@@ -709,6 +753,15 @@ class LoRaCompanionService {
       // First, update device position so repeaters know where message came from
       await _updateDevicePosition(latitude, longitude);
       
+      // Send zero-hop advertisement to get immediate ACKs from nearby repeaters
+      final zeroHopPayload = Uint8List.fromList([0]);  // 0 = zero-hop
+      final zeroHopCmd = _createCommandForDevice(CMD_SEND_ADVERT, zeroHopPayload);
+      _debugLog.logInfo('📡 Sending zero-hop advertisement (CMD_SEND_ADVERT with flag=0)');
+      await _sendBinaryToDevice(zeroHopCmd);
+      
+      // Small delay to let ACKs arrive
+      await Future.delayed(const Duration(milliseconds: 100));
+      
       // Format message: "<lat> <lon> [<ignored_id>]"
       String message = '${latitude.toStringAsFixed(4)} ${longitude.toStringAsFixed(4)}';
       if (_ignoredRepeaterPrefix != null) {
@@ -731,10 +784,13 @@ class LoRaCompanionService {
       // Wait for repeat (echo) from repeater
       final completer = Completer<PingResult>();
       _pendingPings[message] = completer;
+      _pingEchoes[message] = []; // Track all repeaters that echo this ping
 
       Timer(Duration(seconds: timeoutSeconds), () {
         if (!completer.isCompleted) {
           _pendingPings.remove(message);
+          final echoes = _pingEchoes.remove(message) ?? [];
+          print('⏰ Ping timeout. Received ${echoes.length} echoes from: ${echoes.join(", ")}');
           final result = PingResult(
             timestamp: DateTime.now(),
             status: PingStatus.timeout,
@@ -822,12 +878,19 @@ class LoRaCompanionService {
         _handleChannelInfo(frame.data);
         break;
       case PUSH_CODE_CHANNEL_MSG_RECV:
+      case RESP_CODE_CHANNEL_MSG_RECV:
+      case RESP_CODE_CHANNEL_MSG_RECV_V3:
         _handleChannelMessage(frame.data);
         break;
       case PUSH_CODE_CHANNEL_ECHO:
         _debugLog.logLoRa('🔁 Channel echo received (0x88), payload len=${frame.data.length}');
         print('🔁 ECHO frame: ${frame.data.take(40).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
         _handleChannelEcho(frame.data);  // Echo format has extra header
+        break;
+      case PUSH_CODE_ACK_RECV:
+        _debugLog.logLoRa('✅ ACK received (0x84), payload len=${frame.data.length}');
+        print('✅ ACK frame: ${frame.data.take(40).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
+        _handleAckReceived(frame.data);
         break;
       default:
         // Log other frame types for debugging
@@ -844,6 +907,9 @@ class LoRaCompanionService {
     final keyPrefix = keyHexFull.substring(0, 8).toUpperCase();
     _debugLog.logInfo('📡 Advertisement from $keyPrefix');
     
+    // Track this advertisement for echo correlation
+    _recentAdvertisements[keyPrefix] = DateTime.now();
+    
     // Do not request contacts on adverts to avoid full list dumps.
     // We already load contacts on connect or when user scans.
     _debugLog.logInfo('ℹ️ Skipping contact request on ADVERT for $keyPrefix');
@@ -858,6 +924,11 @@ class LoRaCompanionService {
     } catch (e) {
       _debugLog.logError('Failed to request full contact list: $e');
     }
+  }
+  
+  /// Refresh contact list (public method for UI)
+  Future<void> refreshContactList() async {
+    await _requestAllContacts();
   }
 
   /// Request contact details for a specific public key
@@ -973,6 +1044,74 @@ class LoRaCompanionService {
     }
     _processChannelMessage(msgData);
   }
+  
+  /// Handle PUSH_CODE_ACK_RECV (0x84) - ACK from zero-hop advertisement
+  /// Format: [SNR x2][RSSI x2][public_key x32][...]
+  void _handleAckReceived(Uint8List data) {
+    try {
+      if (data.length < 36) {
+        _debugLog.logError('ACK frame too short: ${data.length} bytes');
+        return;
+      }
+      
+      // Parse SNR and RSSI (first 4 bytes)
+      int snr = data[0] | (data[1] << 8);
+      if (snr > 32767) snr -= 65536; // Convert to signed
+      
+      int rssi = data[2] | (data[3] << 8);
+      if (rssi > 32767) rssi -= 65536; // Convert to signed
+      
+      // Parse public key (next 32 bytes)
+      final publicKey = Uint8List.fromList(data.sublist(4, 36));
+      final keyHex = publicKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+      final keyPrefix = keyHex.substring(0, 8).toUpperCase();
+      
+      _debugLog.logInfo('✅ ACK from $keyPrefix (SNR: $snr, RSSI: $rssi)');
+      print('✅ ACK from $keyPrefix (SNR: $snr, RSSI: $rssi)');
+      
+      // If we have pending pings, complete the first one
+      if (_pendingPings.isNotEmpty) {
+        final pingMsg = _pendingPings.keys.first;
+        
+        // Track this ACK
+        if (_pingEchoes.containsKey(pingMsg)) {
+          _pingEchoes[pingMsg]!.add(keyPrefix);
+          print('📊 Ping now has ${_pingEchoes[pingMsg]!.length} ACKs: ${_pingEchoes[pingMsg]!.join(", ")}');
+        }
+        
+        // Check if this is from ignored repeater
+        if (_ignoredRepeaterPrefix != null && 
+            keyPrefix.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase())) {
+          _debugLog.logInfo('Ignoring ACK from mobile repeater: $keyPrefix');
+          return;
+        }
+        
+        // Complete ping on FIRST valid (non-ignored) ACK
+        final completer = _pendingPings.remove(pingMsg);
+        final allAcks = _pingEchoes.remove(pingMsg) ?? [];
+        
+        if (completer == null || completer.isCompleted) {
+          return;
+        }
+        
+        _debugLog.logPing('🔁 Zero-hop ACK from $keyPrefix! SNR: $snr RSSI: $rssi (Total ACKs: ${allAcks.length})');
+        
+        final result = PingResult(
+          timestamp: DateTime.now(),
+          status: PingStatus.success,
+          rssi: rssi,
+          snr: snr,
+          nodeId: keyPrefix,
+        );
+        
+        completer.complete(result);
+        _pingResultController.add(result);
+      }
+    } catch (e) {
+      _debugLog.logError('Error parsing ACK frame: $e');
+      print('❌ Error parsing ACK: $e');
+    }
+  }
 
   /// Handle PUSH_CODE_CHANNEL_MSG_RECV - incoming channel message (repeat)
   void _handleChannelMessage(Uint8List data) {
@@ -988,12 +1127,21 @@ class LoRaCompanionService {
   Future<void> _processChannelMessage(Map<String, dynamic> msgData) async {
     
     final text = msgData['text'] as String?;
-    final repeater = msgData['repeater'] as String?;
+    final pathRepeater = msgData['repeater'] as String?;  // First hop from path
+    final sender = msgData['sender'] as String?;  // Packet sender (could be the repeater that echoed)
     final snr = msgData['snr'] as int?;
     final rssi = msgData['rssi'] as int?;
     
-    _debugLog.logLoRa('📡 Channel message from ${msgData['sender']}: "$text" via $repeater');
-    print('📡 Channel message received: "$text", repeater=$repeater, snr=$snr, rssi=$rssi');
+    // Try to determine which repeater sent this echo
+    // 1. If there's a path, use the first hop (routed packets)
+    // 2. If sender field is present, use that
+    // NOTE: For flood/echo packets, we CANNOT determine which repeater sent it
+    // because the source is not included in the encrypted packet structure.
+    // The firmware tracks this internally but doesn't expose it to the companion app.
+    String? repeater = pathRepeater ?? sender;
+    
+    _debugLog.logLoRa('📡 Channel message from $sender: "$text" via $repeater');
+    print('📡 Channel message received: "$text", sender=$sender, repeater=$repeater, snr=$snr, rssi=$rssi');
 
     // Update repeater signal metrics in UI caches
     if (repeater != null && (snr != null || rssi != null)) {
@@ -1003,8 +1151,8 @@ class LoRaCompanionService {
     // Check if this is a scan broadcast response
     // During scan, we accept ANY echo and request contact details to cache
     if (_pendingScanMessage != null && _scanCompleter != null && !_scanCompleter!.isCompleted) {
-      // Use repeater ID if available, otherwise use sender (for direct echoes)
-      final nodeId = repeater ?? msgData['sender'] as String?;
+      // Use repeater ID (sender is the repeater that echoed)
+      final nodeId = repeater;
       
       // Ignore companion nodes (not repeaters)
       if (nodeId != null && _isCompanionNode(nodeId)) {
@@ -1029,11 +1177,11 @@ class LoRaCompanionService {
     
     // Check if this is a repeat of one of our pings
     // Accept ANY echo when we have pending pings (messages are encrypted)
-    // Use repeater if available, otherwise sender (for direct echoes)
-    final echoSource = repeater ?? msgData['sender'] as String?;
+    // The repeater variable now contains the sender (repeater that echoed)
+    final echoSource = repeater ?? 'DIRECT';
     
-    if (_pendingPings.isNotEmpty && echoSource != null) {
-      print('Echo received from $echoSource (repeater=$repeater, sender=${msgData['sender']}) with pending pings: ${_pendingPings.keys.toList()}');
+    if (_pendingPings.isNotEmpty) {
+      print('Echo received from $echoSource (repeater=$repeater, sender=${msgData['sender']}, adverts=${_recentAdvertisements.keys.join(",")}) with pending pings: ${_pendingPings.keys.toList()}');
       
       // Ignore companion nodes (not repeaters)
       if (_isCompanionNode(echoSource)) {
@@ -1043,35 +1191,43 @@ class LoRaCompanionService {
       
       // Get the oldest pending ping
       final pingMsg = _pendingPings.keys.first;
-      final completer = _pendingPings.remove(pingMsg);
       
-      if (completer == null || completer.isCompleted) {
-        print('⚠️ Completer was null or already completed');
-        return;
+      // Track this echo
+      if (_pingEchoes.containsKey(pingMsg)) {
+        _pingEchoes[pingMsg]!.add(echoSource);
+        print('📊 Ping now has ${_pingEchoes[pingMsg]!.length} echoes: ${_pingEchoes[pingMsg]!.join(", ")}');
       }
       
       // Check if this is from ignored repeater
       if (_ignoredRepeaterPrefix != null && 
           echoSource.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase())) {
         _debugLog.logInfo('Ignoring repeat from mobile repeater: $echoSource');
-        // Don't complete - wait for other repeaters
-        _pendingPings[pingMsg] = completer;
+        // Don't complete yet - wait for other repeaters
         return;
       }
       
-      // Do NOT request contact details here; some firmware returns full contact list.
-      // We rely on the connect-time contact load or manual scan to populate repeater details.
+      // Complete ping on FIRST valid (non-ignored) echo
+      final completer = _pendingPings.remove(pingMsg);
+      final allEchoes = _pingEchoes.remove(pingMsg) ?? [];
       
-      // Repeater echo verifies good connection - complete the ping immediately
-      _debugLog.logPing('🔁 Heard repeat from $echoSource! SNR: $snr RSSI: $rssi');
-      print('🔁 Heard repeat from $echoSource! SNR: $snr, RSSI: $rssi');
+      if (completer == null || completer.isCompleted) {
+        print('⚠️ Completer was null or already completed');
+        return;
+      }
+      
+      // Repeater ID extracted from the packet path (last hop in the path)
+      // This is a 2-character hex prefix of the repeater's public key
+      final repeaterId = repeater;
+      
+      _debugLog.logPing('🔁 Echo from ${repeaterId ?? "unknown"}! SNR: $snr RSSI: $rssi (Total echoes: ${allEchoes.length})');
+      print('🔁 Echo from repeater: $repeaterId, SNR: $snr, RSSI: $rssi');
       
       final result = PingResult(
         timestamp: DateTime.now(),
         status: PingStatus.success,
         rssi: rssi,
         snr: snr,
-        nodeId: echoSource,
+        nodeId: repeaterId,  // 2-char hex prefix from path's last hop
       );
       
       completer.complete(result);

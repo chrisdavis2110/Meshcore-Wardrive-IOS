@@ -34,6 +34,7 @@ const int RESP_CODE_CHANNEL_INFO = 18;
 const int RESP_CODE_CONTACT_MSG_RECV = 7;
 const int RESP_CODE_CHANNEL_MSG_RECV = 8;
 const int RESP_CODE_NO_MORE_MESSAGES = 10;
+const int RESP_CODE_CHANNEL_MSG_RECV_V3 = 17;
 const int RESP_CODE_EXPORT_CONTACT = 11;
 const int RESP_CODE_BATT_AND_STORAGE = 12;
 
@@ -424,6 +425,7 @@ class MeshCoreProtocol {
 
   /// Parse PUSH_CODE_LOG_RX_DATA (0x88) - raw radio log frame
   /// Format: [SNR] [RSSI] [raw_packet_bytes...]
+  /// Raw packet format: [header(1)] [transport_codes(4)-optional] [path_len(1)] [path(path_len)] [payload...]
   /// SNR is multiplied by 4 in firmware, RSSI is raw value
   /// Returns map with 'snr', 'rssi', and parsed packet data if available
   Map<String, dynamic>? parseRawLogFrame(Uint8List data) {
@@ -441,46 +443,66 @@ class MeshCoreProtocol {
       int rssi = data[1];
       if (rssi > 127) rssi -= 256; // Convert to signed byte
       
-      print('📻 Raw log frame: SNR=${snr} (raw=$snrRaw), RSSI=$rssi');
+      print('📻 Raw log frame: SNR=${snr} (raw=$snrRaw), RSSI=$rssi, total=${data.length} bytes');
       
-      // If there's more data, it's the raw packet - try to parse sender/repeater
-      String? sender;
+      // Parse raw MeshCore packet structure
+      // Frame is: [SNR][RSSI][raw_packet...]
+      // Raw packet is: [header][transport_codes?][pathLen][path...][payload...]
       String? repeater;
-      Uint8List? senderKey;
       Uint8List? repeaterKey;
       
-      if (data.length > 34) { // At least channel(1) + sender(32) + pathLen(1)
-        int offset = 2;
+      if (data.length > 4) { // Need at least SNR+RSSI+header+pathLen
+        int offset = 2; // Skip SNR/RSSI
         
-        // Channel index
-        final channelIdx = data[offset++];
+        // Parse packet header
+        final header = data[offset++];
+        final routeType = header & 0x03;
+        final hasTransportCodes = routeType == 0x00 || routeType == 0x03;
         
-        // Sender public key (32 bytes)
-        if (data.length >= offset + 32) {
-          senderKey = Uint8List.fromList(data.sublist(offset, offset + 32));
-          sender = senderKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').substring(0, 8).toUpperCase();
-          offset += 32;
-        }
-        
-        // Path length
-        if (data.length > offset) {
-          final pathLen = data[offset++];
-          
-          // First repeater key if path exists
-          if (pathLen > 0 && data.length >= offset + 32) {
-            repeaterKey = Uint8List.fromList(data.sublist(offset, offset + 32));
-            repeater = repeaterKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').substring(0, 8).toUpperCase();
+        // Skip transport codes if present (4 bytes)
+        if (hasTransportCodes) {
+          if (data.length < offset + 4) {
+            print('  Not enough data for transport codes');
+            return {'snr': snr, 'rssi': rssi, 'sender': null, 'repeater': null, 'repeaterKey': null};
           }
+          offset += 4;
         }
         
-        print('  Parsed packet: channel=$channelIdx, sender=$sender, repeater=$repeater');
+        // Read path_len (signed byte)
+        if (data.length <= offset) {
+          print('  No pathLen byte');
+          return {'snr': snr, 'rssi': rssi, 'sender': null, 'repeater': null, 'repeaterKey': null};
+        }
+        
+        int pathLen = data[offset++];
+        // Convert unsigned byte to signed
+        if (pathLen > 127) pathLen -= 256;
+        print('  header=0x${header.toRadixString(16)}, routeType=$routeType, hasTransport=$hasTransportCodes, pathLen=$pathLen');
+        
+        // IMPORTANT: Flood packets with built-up paths store 1-byte prefixes per hop!
+        // Direct packets (routeType=0x02) have full 32-byte keys per hop
+        // Get LAST hop in path (most recent repeater)
+        if (pathLen > 0 && routeType == 0x01) { // ROUTE_TYPE_FLOOD
+          if (data.length >= offset + pathLen) {
+            // Extract last byte from path (last repeater's 1-byte prefix)
+            final lastHopByte = data[offset + pathLen - 1];
+            repeater = lastHopByte.toRadixString(16).padLeft(2, '0').toUpperCase();
+            print('  🎯 FLOOD packet with path! Last hop (${pathLen} hops): $repeater');
+          } else {
+            print('  Path exists but data too short: pathLen=$pathLen, available=${data.length - offset}');
+          }
+        } else if (pathLen > 0 && routeType == 0x02) { // ROUTE_TYPE_DIRECT  
+          // Direct routes have full 32-byte keys (not used in wardrive typically)
+          print('  Direct route with full keys (pathLen=$pathLen)');
+        } else if (pathLen == 0 || pathLen < 0) {
+          print('  Zero-hop packet (direct/flood with no path built)');
+        }
       }
       
       return {
         'snr': snr,
         'rssi': rssi,
-        'sender': sender,
-        'senderKey': senderKey,
+        'sender': null, // Not extracting sender from encrypted payload, use repeater instead
         'repeater': repeater,
         'repeaterKey': repeaterKey,
       };
