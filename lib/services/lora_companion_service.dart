@@ -612,15 +612,15 @@ class LoRaCompanionService {
       _channelsQueried = 0;
       _meshwarFound = false;
       
-      // Query channels 0-7 to find #meshwar
-      for (int i = 0; i <= 7; i++) {
+      // Query channels 0-39 to find #meshwar (LoRa companion supports up to 40 channels)
+      for (int i = 0; i <= 39; i++) {
         await _requestChannelInfo(i);
         await Future.delayed(const Duration(milliseconds: 100));
       }
       
-      // Wait up to 3 seconds for responses
+      // Wait up to 6 seconds for responses (more channels to query)
       await _channelDiscoveryCompleter!.future.timeout(
-        const Duration(seconds: 3),
+        const Duration(seconds: 6),
         onTimeout: () {
           _debugLog.logInfo('Channel discovery timeout');
         },
@@ -630,9 +630,9 @@ class LoRaCompanionService {
         _debugLog.logError('#meshwar channel not found');
         print('⚠️ #meshwar channel not found - user needs to join it in MeshCore app first');
         
-        // Choose a target slot: first empty slot from 1..7, else 3 if empty, else skip
+        // Choose a target slot: first empty slot from 1..39, else 3 if empty, else skip
         int? targetIdx;
-        for (int i = 1; i <= 7; i++) {
+        for (int i = 1; i <= 39; i++) {
           final n = _channelNames[i];
           if (n == null || n.trim().isEmpty) { targetIdx = i; break; }
         }
@@ -702,7 +702,7 @@ class LoRaCompanionService {
         }
         
         _channelDiscoveryCompleter!.complete();
-      } else if (_channelsQueried >= 8) {
+      } else if (_channelsQueried >= 40) {
         // All channels queried, none found
         _channelDiscoveryCompleter!.complete();
       }

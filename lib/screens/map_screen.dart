@@ -31,7 +31,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.15';
+  static const String appVersion = '1.0.16';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
