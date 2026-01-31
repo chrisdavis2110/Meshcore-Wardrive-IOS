@@ -7,9 +7,10 @@ import 'dart:io';
 class DatabaseService {
   static Database? _database;
   static const String _databaseName = 'meshcore_wardrive.db';
-  static const int _databaseVersion = 4;
+  static const int _databaseVersion = 5;
 
   static const String tableSamples = 'samples';
+  static const String tableUploads = 'uploads';
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -55,6 +56,21 @@ class DatabaseService {
     await db.execute('''
       CREATE INDEX idx_samples_timestamp ON $tableSamples (timestamp)
     ''');
+    
+    // Create uploads tracking table (per-endpoint upload tracking)
+    await db.execute('''
+      CREATE TABLE $tableUploads (
+        sample_id TEXT NOT NULL,
+        endpoint_url TEXT NOT NULL,
+        uploaded_at INTEGER NOT NULL,
+        PRIMARY KEY (sample_id, endpoint_url)
+      )
+    ''');
+    
+    // Create index on endpoint_url for faster queries
+    await db.execute('''
+      CREATE INDEX idx_uploads_endpoint ON $tableUploads (endpoint_url)
+    ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -71,6 +87,28 @@ class DatabaseService {
     if (oldVersion < 4) {
       // Add uploaded tracking column
       await db.execute('ALTER TABLE $tableSamples ADD COLUMN uploaded INTEGER DEFAULT 0');
+    }
+    if (oldVersion < 5) {
+      // Create uploads tracking table for per-endpoint upload tracking
+      await db.execute('''
+        CREATE TABLE $tableUploads (
+          sample_id TEXT NOT NULL,
+          endpoint_url TEXT NOT NULL,
+          uploaded_at INTEGER NOT NULL,
+          PRIMARY KEY (sample_id, endpoint_url)
+        )
+      ''');
+      
+      await db.execute('''
+        CREATE INDEX idx_uploads_endpoint ON $tableUploads (endpoint_url)
+      ''');
+      
+      // Migrate existing uploaded samples to new table (assume default endpoint)
+      await db.execute('''
+        INSERT INTO $tableUploads (sample_id, endpoint_url, uploaded_at)
+        SELECT id, 'https://meshwar-map.pages.dev/api/samples', ?
+        FROM $tableSamples WHERE uploaded = 1
+      ''', [DateTime.now().millisecondsSinceEpoch]);
     }
   }
 
@@ -163,6 +201,39 @@ class DatabaseService {
       );
     }
     await batch.commit(noResult: true);
+  }
+  
+  /// Mark samples as uploaded to a specific endpoint
+  Future<void> markSamplesAsUploadedToEndpoint(List<String> sampleIds, String endpointUrl) async {
+    final db = await database;
+    final batch = db.batch();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    
+    for (final id in sampleIds) {
+      batch.insert(
+        tableUploads,
+        {
+          'sample_id': id,
+          'endpoint_url': endpointUrl,
+          'uploaded_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+  
+  /// Get samples that haven't been uploaded to a specific endpoint
+  Future<List<Sample>> getUnuploadedSamplesForEndpoint(String endpointUrl) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      SELECT s.* FROM $tableSamples s
+      LEFT JOIN $tableUploads u ON s.id = u.sample_id AND u.endpoint_url = ?
+      WHERE u.sample_id IS NULL
+      ORDER BY s.timestamp DESC
+    ''', [endpointUrl]);
+    
+    return maps.map((map) => Sample.fromMap(map)).toList();
   }
 
   /// Get count of unuploaded samples

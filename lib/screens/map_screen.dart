@@ -2125,8 +2125,9 @@ class _MapScreenState extends State<MapScreen> {
       
       Map<String, UploadResult> results;
       
-      if (selectedSites.length > 1) {
-        // Upload to multiple sites
+      // Always use multi-site upload path if any endpoints are configured
+      // This ensures custom endpoints work correctly
+      if (selectedSites.isNotEmpty && endpoints.isNotEmpty) {
         results = await _uploadService.uploadToSelectedEndpoints(
           repeaterNames: repeaterNames,
           onProgress: (siteName, current, total) {
@@ -2138,7 +2139,7 @@ class _MapScreenState extends State<MapScreen> {
           },
         );
       } else {
-        // Single site upload (original behavior)
+        // Fallback for backward compatibility (shouldn't happen)
         final result = await _uploadService.uploadAllSamples(
           repeaterNames: repeaterNames,
           onProgress: (current, total) {
@@ -2244,7 +2245,12 @@ class _MapScreenState extends State<MapScreen> {
                     child: Text('No upload sites configured'),
                   )
                 else
-                  ...endpoints.map((endpoint) {
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: endpoints.length,
+                      itemBuilder: (context, index) {
+                        final endpoint = endpoints[index];
                     final isSelected = selectedNames.contains(endpoint.name);
                     return CheckboxListTile(
                       title: Text(endpoint.name),
@@ -2297,7 +2303,9 @@ class _MapScreenState extends State<MapScreen> {
                         },
                       ),
                     );
-                  }).toList(),
+                      },
+                    ),
+                  ),
               ],
             ),
           ),

@@ -239,30 +239,175 @@ class UploadService {
     final selectedNames = await getSelectedEndpoints();
     final results = <String, UploadResult>{};
     
+    // Check if any endpoint has samples to upload
+    bool hasAnySamples = false;
     for (final endpoint in endpoints) {
       if (selectedNames.contains(endpoint.name)) {
-        // Temporarily set this as the active endpoint
-        final originalUrl = await getApiUrl();
-        await setApiUrl(endpoint.url);
-        
-        // Upload to this endpoint
-        final result = await uploadAllSamples(
-          repeaterNames: repeaterNames,
-          onProgress: (current, total) {
-            if (onProgress != null) {
-              onProgress(endpoint.name, current, total);
+        final samples = await _db.getUnuploadedSamplesForEndpoint(endpoint.url);
+        if (samples.isNotEmpty) {
+          hasAnySamples = true;
+          break;
+        }
+      }
+    }
+    
+    if (!hasAnySamples) {
+      return {'All Sites': UploadResult(success: true, message: 'No new samples to upload')};
+    }
+    
+    // Upload to each selected endpoint
+    for (final endpoint in endpoints) {
+      if (selectedNames.contains(endpoint.name)) {
+        try {
+          // Get samples not yet uploaded to this specific endpoint
+          final samples = await _db.getUnuploadedSamplesForEndpoint(endpoint.url);
+          
+          if (samples.isEmpty) {
+            results[endpoint.name] = UploadResult(
+              success: true,
+              message: 'No new samples to upload',
+            );
+            continue;
+          }
+          
+          final result = await _uploadSamplesToEndpoint(
+            endpoint.url,
+            samples,
+            repeaterNames: repeaterNames,
+            onProgress: (current, total) {
+              if (onProgress != null) {
+                onProgress(endpoint.name, current, total);
+              }
+            },
+          );
+          
+          results[endpoint.name] = result;
+          
+          // Mark samples as uploaded to this specific endpoint
+          if (result.success) {
+            final sampleIds = samples.map((s) => s.id).toList();
+            await _db.markSamplesAsUploadedToEndpoint(sampleIds, endpoint.url);
+            
+            // Also update old uploaded flag for backward compatibility (default endpoint only)
+            if (_isDefaultEndpoint(endpoint.url)) {
+              await _db.markSamplesAsUploaded(sampleIds);
             }
-          },
-        );
-        
-        results[endpoint.name] = result;
-        
-        // Restore original URL
-        await setApiUrl(originalUrl);
+          }
+        } catch (e) {
+          results[endpoint.name] = UploadResult(
+            success: false,
+            message: 'Upload failed: $e',
+          );
+        }
       }
     }
     
     return results;
+  }
+  
+  /// Internal method to upload samples to a specific endpoint
+  Future<UploadResult> _uploadSamplesToEndpoint(
+    String apiUrl,
+    List<Sample> samples,
+    {Map<String, String>? repeaterNames,
+    Function(int current, int total)? onProgress,
+  }) async {
+    // Convert samples to JSON
+    final samplesJson = samples.map((sample) => {
+      'id': sample.id,
+      'nodeId': (sample.path == null || sample.path!.isEmpty)
+          ? 'Unknown'
+          : (sample.path!.length > 8 ? sample.path!.substring(0, 8).toUpperCase() : sample.path!.toUpperCase()),
+      'repeaterName': (() {
+        final name = (sample.path != null && repeaterNames != null)
+            ? repeaterNames![sample.path]
+            : null;
+        if (name != null && name.isNotEmpty) return name;
+        if (sample.path == null || sample.path!.isEmpty) return 'Unknown';
+        final short = sample.path!.length > 8 ? sample.path!.substring(0,8).toUpperCase() : sample.path!.toUpperCase();
+        return short;
+      })(),
+      'latitude': sample.position.latitude,
+      'longitude': sample.position.longitude,
+      'rssi': sample.rssi,
+      'snr': sample.snr,
+      'pingSuccess': sample.pingSuccess,
+      'timestamp': sample.timestamp.toIso8601String(),
+      'appVersion': appVersion,
+    }).toList();
+    
+    print('Uploading ${samplesJson.length} samples to $apiUrl in batches...');
+    
+    // Split into batches of 100 samples each
+    const batchSize = 100;
+    final totalBatches = (samplesJson.length / batchSize).ceil();
+    int totalCells = 0;
+    
+    for (int i = 0; i < totalBatches; i++) {
+      final start = i * batchSize;
+      final end = (start + batchSize < samplesJson.length) 
+          ? start + batchSize 
+          : samplesJson.length;
+      final batch = samplesJson.sublist(start, end);
+      
+      // Report progress
+      if (onProgress != null) {
+        onProgress(i + 1, totalBatches);
+      }
+      
+      print('Uploading batch ${i + 1}/$totalBatches (${batch.length} samples)');
+      
+      // Try up to 2 times (original + 1 retry)
+      bool success = false;
+      http.Response? response;
+      String? error;
+      
+      for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+          response = await http.post(
+            Uri.parse(apiUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'samples': batch}),
+          ).timeout(const Duration(seconds: 60));
+          
+          if (response.statusCode == 200) {
+            success = true;
+            final responseData = jsonDecode(response.body);
+            totalCells = responseData['totalCells'] ?? totalCells;
+            break; // Success, exit retry loop
+          } else {
+            error = 'Server error: ${response.statusCode}';
+            if (attempt == 0) {
+              print('Batch ${i + 1} failed with ${response.statusCode}, retrying...');
+              await Future.delayed(const Duration(seconds: 2));
+            }
+          }
+        } catch (e) {
+          error = e.toString();
+          if (attempt == 0) {
+            print('Batch ${i + 1} failed: $e, retrying...');
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        }
+      }
+      
+      if (!success) {
+        return UploadResult(
+          success: false,
+          message: 'Failed at batch ${i + 1}/$totalBatches: $error',
+        );
+      }
+    }
+    
+    // All batches successful
+    await _setLastUploadTime(DateTime.now());
+    
+    return UploadResult(
+      success: true,
+      message: 'Upload Complete',
+      uploadedCount: samples.length,
+      totalCount: totalCells,
+    );
   }
 }
 

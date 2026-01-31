@@ -13,6 +13,11 @@
   - Useful for analyzing coverage from specific repeaters
 
 ### Fixed
+- **Multi-Site Upload Tracking**: Samples can now be uploaded to multiple endpoints independently
+  - Each endpoint tracks which samples it has received separately
+  - Uploading to default endpoint no longer blocks uploading to custom endpoints
+  - Database now uses per-endpoint upload tracking instead of global flag
+  - Existing uploaded samples automatically migrated to new tracking system
 - **Upload Reliability**: Fixed upload failures with large datasets (1000+ samples)
   - Uploads now split into batches of 100 samples to prevent timeouts
   - Increased timeout from 30 seconds to 60 seconds per batch
