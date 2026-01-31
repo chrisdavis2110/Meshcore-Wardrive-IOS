@@ -867,7 +867,16 @@ class _MapScreenState extends State<MapScreen> {
                   ),
                   child: const Text('Connect', style: TextStyle(fontSize: 12)),
                 ),
-              if (_loraConnected)
+              if (_loraConnected) ...[  
+                IconButton(
+                  icon: const Icon(Icons.link_off, size: 16),
+                  onPressed: _disconnectLoRa,
+                  tooltip: 'Disconnect',
+                  color: Colors.red,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+                const SizedBox(width: 4),
                 IconButton(
                   icon: const Icon(Icons.send, size: 18),
                   onPressed: _manualPing,
@@ -876,6 +885,7 @@ class _MapScreenState extends State<MapScreen> {
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
                 ),
+              ],
             ],
           ),
         ),
@@ -1415,7 +1425,7 @@ class _MapScreenState extends State<MapScreen> {
               },
             ),
             SwitchListTile(
-              title: const Text('Lock Rotation to North'),
+              title: const Text('Lock Map Rotation'),
               subtitle: const Text('Prevent map rotation'),
               value: _lockRotationNorth,
               onChanged: (value) {
@@ -2224,113 +2234,135 @@ class _MapScreenState extends State<MapScreen> {
     final endpoints = await _uploadService.getUploadEndpoints();
     final selectedNames = await _uploadService.getSelectedEndpoints();
     
-    await showDialog(
+    await showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('Manage Upload Sites'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Select which sites to upload to:',
-                  style: TextStyle(fontSize: 13, color: Colors.grey),
-                ),
-                const SizedBox(height: 12),
-                if (endpoints.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Text('No upload sites configured'),
-                  )
-                else
-                  ...endpoints.map((endpoint) {
-                    final isSelected = selectedNames.contains(endpoint.name);
-                    return CheckboxListTile(
-                      title: Text(endpoint.name),
-                      subtitle: Text(
-                        endpoint.url,
-                        style: const TextStyle(fontSize: 11),
-                        overflow: TextOverflow.ellipsis,
+        builder: (context, setModalState) => SafeArea(
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.6,
+            minChildSize: 0.4,
+            maxChildSize: 0.9,
+            expand: false,
+            builder: (context, scrollController) => Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: ListView(
+                controller: scrollController,
+                children: [
+                  Row(
+                    children: const [
+                      Text(
+                        'Manage Upload Sites',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                       ),
-                      value: isSelected,
-                      onChanged: (value) {
-                        setState(() {
-                          if (value == true) {
-                            if (!selectedNames.contains(endpoint.name)) {
-                              selectedNames.add(endpoint.name);
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Select which sites to upload to:',
+                    style: TextStyle(fontSize: 13, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  if (endpoints.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Text('No upload sites configured'),
+                    )
+                  else
+                    ...endpoints.map((endpoint) {
+                      final isSelected = selectedNames.contains(endpoint.name);
+                      return CheckboxListTile(
+                        title: Text(endpoint.name),
+                        subtitle: Text(
+                          endpoint.url,
+                          style: const TextStyle(fontSize: 11),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        value: isSelected,
+                        onChanged: (value) {
+                          setModalState(() {
+                            if (value == true) {
+                              if (!selectedNames.contains(endpoint.name)) {
+                                selectedNames.add(endpoint.name);
+                              }
+                            } else {
+                              selectedNames.remove(endpoint.name);
                             }
-                          } else {
-                            selectedNames.remove(endpoint.name);
-                          }
-                        });
-                      },
-                      secondary: IconButton(
-                        icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                          });
+                        },
+                        secondary: IconButton(
+                          icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                          onPressed: () async {
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('Delete Site'),
+                                content: Text('Delete "${endpoint.name}"?'),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                    child: const Text('Cancel'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                    child: const Text('Delete'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirmed == true) {
+                              endpoints.remove(endpoint);
+                              selectedNames.remove(endpoint.name);
+                              await _uploadService.setUploadEndpoints(endpoints);
+                              await _uploadService.setSelectedEndpoints(selectedNames);
+                              setModalState(() {});
+                            }
+                          },
+                        ),
+                      );
+                    }).toList(),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      TextButton.icon(
                         onPressed: () async {
-                          final confirmed = await showDialog<bool>(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              title: const Text('Delete Site'),
-                              content: Text('Delete "${endpoint.name}"?'),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, false),
-                                  child: const Text('Cancel'),
-                                ),
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, true),
-                                  style: TextButton.styleFrom(foregroundColor: Colors.red),
-                                  child: const Text('Delete'),
-                                ),
-                              ],
-                            ),
-                          );
-                          
-                          if (confirmed == true) {
-                            endpoints.remove(endpoint);
-                            selectedNames.remove(endpoint.name);
+                          final result = await _showAddEndpointDialog();
+                          if (result != null) {
+                            endpoints.add(result);
+                            selectedNames.add(result.name);
                             await _uploadService.setUploadEndpoints(endpoints);
                             await _uploadService.setSelectedEndpoints(selectedNames);
-                            setState(() {});
+                            setModalState(() {});
                           }
                         },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add Site'),
                       ),
-                    );
-                  }),
-              ],
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          await _uploadService.setSelectedEndpoints(selectedNames);
+                          Navigator.pop(context);
+                          _showSnackBar('Upload sites updated');
+                        },
+                        child: const Text('Save'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
-          actions: [
-            TextButton.icon(
-              onPressed: () async {
-                final result = await _showAddEndpointDialog();
-                if (result != null) {
-                  endpoints.add(result);
-                  selectedNames.add(result.name);
-                  await _uploadService.setUploadEndpoints(endpoints);
-                  await _uploadService.setSelectedEndpoints(selectedNames);
-                  setState(() {});
-                }
-              },
-              icon: const Icon(Icons.add),
-              label: const Text('Add Site'),
-            ),
-            const Spacer(),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () async {
-                await _uploadService.setSelectedEndpoints(selectedNames);
-                Navigator.pop(context);
-                _showSnackBar('Upload sites updated');
-              },
-              child: const Text('Save'),
-            ),
-          ],
         ),
       ),
     );
