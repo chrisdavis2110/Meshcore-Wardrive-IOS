@@ -2251,58 +2251,58 @@ class _MapScreenState extends State<MapScreen> {
                       itemCount: endpoints.length,
                       itemBuilder: (context, index) {
                         final endpoint = endpoints[index];
-                    final isSelected = selectedNames.contains(endpoint.name);
-                    return CheckboxListTile(
-                      title: Text(endpoint.name),
-                      subtitle: Text(
-                        endpoint.url,
-                        style: const TextStyle(fontSize: 11),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      value: isSelected,
-                      onChanged: (value) {
-                        setState(() {
-                          if (value == true) {
-                            if (!selectedNames.contains(endpoint.name)) {
-                              selectedNames.add(endpoint.name);
-                            }
-                          } else {
-                            selectedNames.remove(endpoint.name);
-                          }
-                        });
-                      },
-                      secondary: IconButton(
-                        icon: const Icon(Icons.delete, size: 20, color: Colors.red),
-                        onPressed: () async {
-                          final confirmed = await showDialog<bool>(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              title: const Text('Delete Site'),
-                              content: Text('Delete "${endpoint.name}"?'),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, false),
-                                  child: const Text('Cancel'),
+                        final isSelected = selectedNames.contains(endpoint.name);
+                        return CheckboxListTile(
+                          title: Text(endpoint.name),
+                          subtitle: Text(
+                            endpoint.url,
+                            style: const TextStyle(fontSize: 11),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          value: isSelected,
+                          onChanged: (value) {
+                            setState(() {
+                              if (value == true) {
+                                if (!selectedNames.contains(endpoint.name)) {
+                                  selectedNames.add(endpoint.name);
+                                }
+                              } else {
+                                selectedNames.remove(endpoint.name);
+                              }
+                            });
+                          },
+                          secondary: IconButton(
+                            icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                            onPressed: () async {
+                              final confirmed = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Delete Site'),
+                                  content: Text('Delete "${endpoint.name}"?'),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, false),
+                                      child: const Text('Cancel'),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, true),
+                                      style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                      child: const Text('Delete'),
+                                    ),
+                                  ],
                                 ),
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, true),
-                                  style: TextButton.styleFrom(foregroundColor: Colors.red),
-                                  child: const Text('Delete'),
-                                ),
-                              ],
-                            ),
-                          );
-                          
-                          if (confirmed == true) {
-                            endpoints.remove(endpoint);
-                            selectedNames.remove(endpoint.name);
-                            await _uploadService.setUploadEndpoints(endpoints);
-                            await _uploadService.setSelectedEndpoints(selectedNames);
-                            setState(() {});
-                          }
-                        },
-                      ),
-                    );
+                              );
+                              
+                              if (confirmed == true) {
+                                endpoints.remove(endpoint);
+                                selectedNames.remove(endpoint.name);
+                                await _uploadService.setUploadEndpoints(endpoints);
+                                await _uploadService.setSelectedEndpoints(selectedNames);
+                                setState(() {});
+                              }
+                            },
+                          ),
+                        );
                       },
                     ),
                   ),
