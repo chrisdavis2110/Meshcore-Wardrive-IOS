@@ -38,18 +38,18 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   // App version is imported from constants/app_version.dart
-  
+
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
   final UploadService _uploadService = UploadService();
   final SettingsService _settingsService = SettingsService();
   final ScreenshotController _screenshotController = ScreenshotController();
-  
+
   bool _isTracking = false;
   int _sampleCount = 0;
   List<Sample> _samples = [];
   AggregationResult? _aggregationResult;
-  
+
   String _colorMode = 'quality';
   bool _showSamples = false;
   bool _showGpsSamples = true; // Show GPS-only samples (null pingSuccess)
@@ -63,39 +63,39 @@ class _MapScreenState extends State<MapScreen> {
   bool _filterEdgesByWhitelist = false; // Whether to apply whitelist to edges
   double _pingIntervalMeters = 805.0; // Default 0.5 miles
   int _coveragePrecision = 6; // Default precision 6 (~1.2km squares)
-  
+
   // Repeaters
   List<Repeater> _repeaters = [];
-  
+
   LatLng? _currentPosition;
   Timer? _updateTimer;
   StreamSubscription<LatLng>? _positionSubscription;
   StreamSubscription<void>? _sampleSavedSubscription;
   StreamSubscription<String>? _pingEventSubscription;
   StreamSubscription<double>? _distanceSubscription;
-  
+
   // Ping visual indicator
   bool _showPingPulse = false;
-  
+
   // Distance tracking
   double _totalDistance = 0.0;
   String _distanceUnit = 'miles';
-  
+
   // Color blind mode
   String _colorBlindMode = 'normal';
-  
+
   // Screenshot mode - hide UI elements
   bool _hideUIForScreenshot = false;
-  
+
   // LoRa connection status
   bool _loraConnected = false;
   ConnectionType _connectionType = ConnectionType.none;
   int? _batteryPercent;
   StreamSubscription<int?>? _batterySubscription;
-  
+
   // Auto-follow GPS location
   bool _followLocation = false;
-  
+
   // Map rotation lock
   bool _lockRotationNorth = false;
 
@@ -108,7 +108,7 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _initialize() async {
     // Load saved settings
     await _loadSettings();
-    
+
     // Subscribe to battery updates
     final loraService = _locationService.loraCompanion;
     _batterySubscription = loraService.batteryStream.listen((percent) {
@@ -116,24 +116,24 @@ class _MapScreenState extends State<MapScreen> {
         _batteryPercent = percent;
       });
     });
-    
+
     // Subscribe to position updates
     _positionSubscription = _locationService.currentPositionStream.listen((position) {
       setState(() {
         _currentPosition = position;
       });
-      
+
       // Auto-follow if enabled
       if (_followLocation && position != null) {
         _mapController.move(position, _mapController.camera.zoom);
       }
     });
-    
+
     // Subscribe to sample saved events - reload map when new samples are saved
     _sampleSavedSubscription = _locationService.sampleSavedStream.listen((_) {
       _loadSamples();
     });
-    
+
     // Subscribe to ping events for visual feedback
     _pingEventSubscription = _locationService.pingEventStream.listen((event) {
       if (event == 'pinging' && mounted) {
@@ -150,27 +150,27 @@ class _MapScreenState extends State<MapScreen> {
         });
       }
     });
-    
+
     // Subscribe to distance updates
     _distanceSubscription = _locationService.totalDistanceStream.listen((distance) {
       if (mounted) {
         setState(() {
-          _totalDistance = _distanceUnit == 'miles' 
-              ? _locationService.totalDistanceMiles 
+          _totalDistance = _distanceUnit == 'miles'
+              ? _locationService.totalDistanceMiles
               : _locationService.totalDistanceKm;
         });
       }
     });
-    
+
     await _loadSamples();
     await _getCurrentLocation();
-    
+
     // Update periodically
     _updateTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       _loadSamples();
     });
   }
-  
+
   Future<void> _loadSettings() async {
     final showSamples = await _settingsService.getShowSamples();
     final showGpsSamples = await _settingsService.getShowGpsSamples();
@@ -185,7 +185,7 @@ class _MapScreenState extends State<MapScreen> {
     final filterEdges = await _settingsService.getFilterEdgesByWhitelist();
     final distanceUnit = await _settingsService.getDistanceUnit();
     final colorBlindMode = await _settingsService.getColorBlindMode();
-    
+
     setState(() {
       _showSamples = showSamples;
       _showGpsSamples = showGpsSamples;
@@ -201,7 +201,7 @@ class _MapScreenState extends State<MapScreen> {
       _distanceUnit = distanceUnit;
       _colorBlindMode = colorBlindMode;
     });
-    
+
     // Apply to services
     _locationService.setPingInterval(pingInterval);
     _locationService.loraCompanion.setIgnoredRepeaterPrefix(ignoredPrefix);
@@ -221,36 +221,36 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _loadSamples() async {
     final samples = await _locationService.getAllSamples();
     final count = await _locationService.getSampleCount();
-    
+
     // Update connection status
     final loraService = _locationService.loraCompanion;
-    
+
     // Sync discovered repeaters from LoRa service
     final discoveredRepeaters = loraService.discoveredRepeaters;
-    
+
     // Aggregate data with user's chosen coverage precision and repeaters
     final result = AggregationService.buildIndexes(
-      samples, 
+      samples,
       discoveredRepeaters,
       coveragePrecision: _coveragePrecision,
     );
-    
+
     // Combine repeaters from both LoRa service (live) and aggregation result (historical)
     // Use a map to deduplicate by ID, preferring live data when available
     final Map<String, Repeater> repeaterMap = {};
-    
+
     // First add historical repeaters from samples
     for (final repeater in result.repeaters) {
       repeaterMap[repeater.id] = repeater;
     }
-    
+
     // Then overlay with live discovered repeaters (these have fresher data)
     for (final repeater in discoveredRepeaters) {
       repeaterMap[repeater.id] = repeater;
     }
-    
+
     final combinedRepeaters = repeaterMap.values.toList();
-    
+
     setState(() {
       _samples = samples;
       _sampleCount = count;
@@ -348,15 +348,15 @@ class _MapScreenState extends State<MapScreen> {
         ],
       ),
     );
-    
+
     if (choice == null) return;
-    
+
     try {
       final data = await _locationService.exportSamples();
       final json = jsonEncode(data);
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
       final fileName = 'meshcore_export_$timestamp.json';
-      
+
       if (choice == 'save') {
         // Let user choose where to save (provide bytes for Android/iOS)
         final outputFile = await FilePicker.platform.saveFile(
@@ -366,22 +366,22 @@ class _MapScreenState extends State<MapScreen> {
           allowedExtensions: ['json'],
           bytes: utf8.encode(json), // Required on Android/iOS
         );
-        
+
         if (outputFile != null) {
           _showSnackBar('Exported ${data.length} samples');
         }
       } else if (choice == 'share') {
-        // Create temporary file and share
-        final directory = await getExternalStorageDirectory();
-        final file = File('${directory!.path}/$fileName');
+        // Create temporary file and share (works on iOS and Android)
+        final directory = await getTemporaryDirectory();
+        final file = File('${directory.path}/$fileName');
         await file.writeAsString(json);
-        
+
         await Share.shareXFiles(
           [XFile(file.path)],
           subject: 'MeshCore Wardrive Export',
           text: 'Exported ${data.length} samples from MeshCore Wardrive',
         );
-        
+
         _showSnackBar('Export shared');
       }
     } catch (e) {
@@ -396,23 +396,23 @@ class _MapScreenState extends State<MapScreen> {
         type: FileType.custom,
         allowedExtensions: ['json'],
       );
-      
+
       if (result == null || result.files.single.path == null) {
         return; // User cancelled
       }
-      
+
       final file = File(result.files.single.path!);
       final jsonString = await file.readAsString();
       final List<dynamic> jsonData = jsonDecode(jsonString);
-      
+
       // Import samples
       final importedCount = await _locationService.importSamples(
         jsonData.cast<Map<String, dynamic>>(),
       );
-      
+
       // Reload map
       await _loadSamples();
-      
+
       _showSnackBar('Imported $importedCount new samples');
     } catch (e) {
       _showSnackBar('Import failed: $e');
@@ -424,19 +424,19 @@ class _MapScreenState extends State<MapScreen> {
       SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
     );
   }
-  
+
   Future<void> _checkForUpdates() async {
     try {
       final response = await http.get(
         Uri.parse('https://api.github.com/repos/mintylinux/Meshcore-Wardrive-Android/releases/latest'),
       );
-      
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final tagName = data['tag_name'].toString();
         // Extract version from tag like "Meshcore-Wardrive-Android-1.0.2"
         final latestVersion = tagName.split('-').last;
-        
+
         if (latestVersion != appVersion) {
           if (!mounted) return;
           showDialog(
@@ -473,7 +473,7 @@ class _MapScreenState extends State<MapScreen> {
       _showSnackBar('Error checking for updates: $e');
     }
   }
-  
+
   Future<void> _openGitHub() async {
     final url = Uri.parse('https://github.com/mintylinux/Meshcore-Wardrive-Android/releases');
     if (await canLaunchUrl(url)) {
@@ -482,13 +482,13 @@ class _MapScreenState extends State<MapScreen> {
       _showSnackBar('Could not open GitHub');
     }
   }
-  
+
 
   void _toggleFollowLocation() {
     setState(() {
       _followLocation = !_followLocation;
     });
-    
+
     if (_followLocation) {
       // Center on current location when enabling follow
       if (_currentPosition != null) {
@@ -499,37 +499,37 @@ class _MapScreenState extends State<MapScreen> {
       _showSnackBar('Auto-follow disabled');
     }
   }
-  
+
   void _resetMapRotation() {
     _mapController.rotate(0); // 0 degrees = north up
     _showSnackBar('Map reset to north');
   }
-  
+
   Future<void> _captureScreenshot() async {
     try {
       // Hide UI elements
       setState(() {
         _hideUIForScreenshot = true;
       });
-      
+
       // Wait for UI to update
       await Future.delayed(const Duration(milliseconds: 300));
-      
+
       // Capture screenshot
       final Uint8List? imageBytes = await _screenshotController.capture(
         pixelRatio: 2.0, // Higher quality
       );
-      
+
       // Restore UI
       setState(() {
         _hideUIForScreenshot = false;
       });
-      
+
       if (imageBytes == null) {
         _showSnackBar('Failed to capture screenshot');
         return;
       }
-      
+
       // Save to gallery
       final String fileName = 'meshcore_wardrive_${DateTime.now().millisecondsSinceEpoch}.png';
       final result = await SaverGallery.saveImage(
@@ -539,10 +539,10 @@ class _MapScreenState extends State<MapScreen> {
         androidRelativePath: "Pictures/MeshCore",
         skipIfExists: false,
       );
-      
+
       if (result.isSuccess) {
         _showSnackBar('Screenshot saved to gallery!');
-        
+
         // Ask if user wants to share
         if (!mounted) return;
         showDialog(
@@ -667,7 +667,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Widget _buildMap() {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    
+
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
@@ -676,7 +676,7 @@ class _MapScreenState extends State<MapScreen> {
         minZoom: 3.0,
         maxZoom: 18.0,
         interactionOptions: InteractionOptions(
-          flags: _lockRotationNorth 
+          flags: _lockRotationNorth
               ? InteractiveFlag.all & ~InteractiveFlag.rotate  // Disable rotation
               : InteractiveFlag.all,  // Allow all interactions
         ),
@@ -712,19 +712,19 @@ class _MapScreenState extends State<MapScreen> {
 
   List<Widget> _buildCoverageLayers() {
     if (_aggregationResult == null) return [];
-    
+
     final coveragePolygons = <Polygon>[];
     final coverageMarkers = <Marker>[];
-    
+
     for (final coverage in _aggregationResult!.coverages) {
       final gh = geohash.GeoHash.decode(coverage.id);
       final color = Color(AggregationService.getCoverageColor(coverage, _colorMode, colorBlindMode: _colorBlindMode));
       final opacity = AggregationService.getCoverageOpacity(coverage);
-      
+
       // Get corners from geohash bounds
       final sw = gh.bounds.southWest;
       final ne = gh.bounds.northEast;
-      
+
       coveragePolygons.add(
         Polygon(
           points: [
@@ -739,7 +739,7 @@ class _MapScreenState extends State<MapScreen> {
           isFilled: true,
         ),
       );
-      
+
       // Add invisible tap target at center of coverage square
       coverageMarkers.add(
         Marker(
@@ -753,7 +753,7 @@ class _MapScreenState extends State<MapScreen> {
         ),
       );
     }
-    
+
     return [
       PolygonLayer(polygons: coveragePolygons),
       MarkerLayer(markers: coverageMarkers),
@@ -762,37 +762,37 @@ class _MapScreenState extends State<MapScreen> {
 
   Widget _buildSampleLayer() {
     if (_samples.isEmpty) return const SizedBox.shrink();
-    
+
     // Filter samples based on settings
     final filteredSamples = _samples.where((sample) {
       // If showing GPS samples is disabled, hide samples with null pingSuccess
       if (!_showGpsSamples && sample.pingSuccess == null) {
         return false;
       }
-      
+
       // If showing successful only, hide failed pings and GPS-only samples
       if (_showSuccessfulOnly && sample.pingSuccess != true) {
         return false;
       }
-      
+
       // If include-only repeaters is set, only show samples from those repeaters
       if (_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty) {
         final allowedPrefixes = _includeOnlyRepeaters!.split(',').map((s) => s.trim().toUpperCase()).toList();
         final sampleNodeId = sample.path?.toUpperCase() ?? '';
-        
+
         // Check if sample's repeater matches any allowed prefix
         final matches = allowedPrefixes.any((prefix) => sampleNodeId.startsWith(prefix));
         if (!matches) {
           return false;
         }
       }
-      
+
       return true;
     }).toList();
-    
+
     // Sort by timestamp (oldest first) so newer samples render on top
     filteredSamples.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    
+
     final markers = filteredSamples.map((sample) {
       // Determine color based on ping result and color blind mode
       Color markerColor;
@@ -803,7 +803,7 @@ class _MapScreenState extends State<MapScreen> {
       } else {
         markerColor = ColorBlindPalette.getGpsOnlyColor(_colorBlindMode);
       }
-      
+
       return Marker(
         point: sample.position,
         width: 12,
@@ -825,16 +825,16 @@ class _MapScreenState extends State<MapScreen> {
         ),
       );
     }).toList();
-    
+
     return MarkerLayer(markers: markers);
   }
 
   Widget _buildEdgeLayer() {
     if (_aggregationResult == null) return const SizedBox.shrink();
-    
+
     // Filter edges by whitelist if enabled
     var edges = _aggregationResult!.edges;
-    
+
     if (_filterEdgesByWhitelist && _includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty) {
       final allowedPrefixes = _includeOnlyRepeaters!.split(',').map((s) => s.trim().toUpperCase()).toList();
       edges = edges.where((edge) {
@@ -842,7 +842,7 @@ class _MapScreenState extends State<MapScreen> {
         return allowedPrefixes.any((prefix) => repeaterId.startsWith(prefix));
       }).toList();
     }
-    
+
     final polylines = edges.map((edge) {
       return Polyline(
         points: [edge.coverage.position, edge.repeater.position],
@@ -850,13 +850,13 @@ class _MapScreenState extends State<MapScreen> {
         strokeWidth: 2,  // Increased from 1 to 2
       );
     }).toList();
-    
+
     return PolylineLayer(polylines: polylines);
   }
 
   Widget _buildRepeaterLayer() {
     if (_repeaters.isEmpty) return const SizedBox.shrink();
-    
+
     final markers = _repeaters.map((repeater) {
       return Marker(
         point: repeater.position,
@@ -872,7 +872,7 @@ class _MapScreenState extends State<MapScreen> {
         ),
       );
     }).toList();
-    
+
     return MarkerLayer(markers: markers);
   }
 
@@ -892,7 +892,7 @@ class _MapScreenState extends State<MapScreen> {
         ),
       ),
     ];
-    
+
     // Add ping pulse animation when auto-pinging
     if (_showPingPulse) {
       markers.add(
@@ -918,7 +918,7 @@ class _MapScreenState extends State<MapScreen> {
         ),
       );
     }
-    
+
     return MarkerLayer(markers: markers);
   }
 
@@ -940,9 +940,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
               const SizedBox(width: 4),
               Text(
-                _loraConnected 
-                    ? (_connectionType == ConnectionType.usb ? 'USB' : 'BT')
-                    : 'No LoRa',
+                _loraConnected ? 'BT' : 'No LoRa',
                 style: TextStyle(
                   fontSize: 12,
                   color: _loraConnected ? Colors.green : Colors.grey,
@@ -996,7 +994,7 @@ class _MapScreenState extends State<MapScreen> {
                   ),
                   child: const Text('Connect', style: TextStyle(fontSize: 12)),
                 ),
-              if (_loraConnected) ...[  
+              if (_loraConnected) ...[
                 IconButton(
                   icon: const Icon(Icons.link_off, size: 16),
                   onPressed: _disconnectLoRa,
@@ -1057,7 +1055,7 @@ class _MapScreenState extends State<MapScreen> {
       _currentPosition!.latitude,
       _currentPosition!.longitude,
     );
-    
+
     final sample = Sample(
       id: '${DateTime.now().millisecondsSinceEpoch}_$geohash',
       position: _currentPosition!,
@@ -1068,7 +1066,7 @@ class _MapScreenState extends State<MapScreen> {
       snr: result.snr,
       pingSuccess: result.status == PingStatus.success,
     );
-    
+
     await DatabaseService().insertSample(sample);
 
     // Reload samples to update map
@@ -1093,9 +1091,9 @@ class _MapScreenState extends State<MapScreen> {
     try {
       _showSnackBar('Scanning for Bluetooth devices...');
       final devices = await _locationService.loraCompanion.scanBluetoothDevices();
-      
+
       if (!mounted) return;
-      
+
       if (devices.isEmpty) {
         _showSnackBar('No LoRa devices found via Bluetooth');
         return;
@@ -1120,7 +1118,7 @@ class _MapScreenState extends State<MapScreen> {
 
       if (selected != null) {
         _showSnackBar('Connecting to ${selected.platformName}...');
-        
+
         final connected = await _locationService.loraCompanion.connectBluetooth(selected);
         if (connected) {
           _showSnackBar('Connected via Bluetooth!');
@@ -1492,8 +1490,8 @@ class _MapScreenState extends State<MapScreen> {
             if (_loraConnected)
               ListTile(
                 title: const Text('Scan for Repeaters'),
-                subtitle: Text(_repeaters.isEmpty 
-                    ? 'Find nearby LoRa nodes' 
+                subtitle: Text(_repeaters.isEmpty
+                    ? 'Find nearby LoRa nodes'
                     : '${_repeaters.length} repeater(s) found'),
                 leading: const Icon(Icons.cell_tower),
                 trailing: const Icon(Icons.search),
@@ -1540,8 +1538,8 @@ class _MapScreenState extends State<MapScreen> {
                   setState(() {
                     _distanceUnit = value!;
                     // Update displayed distance immediately
-                    _totalDistance = value == 'miles' 
-                        ? _locationService.totalDistanceMiles 
+                    _totalDistance = value == 'miles'
+                        ? _locationService.totalDistanceMiles
                         : _locationService.totalDistanceKm;
                   });
                   setModalState(() {});
@@ -1570,8 +1568,8 @@ class _MapScreenState extends State<MapScreen> {
             ),
             ListTile(
               title: const Text('Ignore Mobile Repeater'),
-              subtitle: Text(_ignoredRepeaterPrefix != null 
-                  ? 'Filtering: ${_ignoredRepeaterPrefix}*' 
+              subtitle: Text(_ignoredRepeaterPrefix != null
+                  ? 'Filtering: ${_ignoredRepeaterPrefix}*'
                   : 'Not filtering'),
               trailing: const Icon(Icons.edit),
               onTap: () {
@@ -1582,7 +1580,7 @@ class _MapScreenState extends State<MapScreen> {
             ListTile(
               title: const Text('Include Only Repeaters'),
               subtitle: Text(_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty
-                  ? 'Whitelist: ${_includeOnlyRepeaters}' 
+                  ? 'Whitelist: ${_includeOnlyRepeaters}'
                   : 'Show all repeaters'),
               trailing: const Icon(Icons.edit),
               onTap: () {
@@ -1739,8 +1737,8 @@ class _MapScreenState extends State<MapScreen> {
     ),
     );
   }
-  
-  
+
+
   Future<void> _disconnectLoRa() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1759,20 +1757,20 @@ class _MapScreenState extends State<MapScreen> {
         ],
       ),
     );
-    
+
     if (confirmed == true) {
       // Disable auto-ping first
       if (_autoPingEnabled) {
         _locationService.disableAutoPing();
       }
-      
+
       await _locationService.loraCompanion.disconnectDevice();
       await _loadSamples();
       _showSnackBar('LoRa device disconnected');
     }
   }
-  
-  
+
+
   IconData _getBatteryIcon(int percent) {
     if (percent > 90) return Icons.battery_full;
     if (percent > 70) return Icons.battery_5_bar;
@@ -1781,44 +1779,44 @@ class _MapScreenState extends State<MapScreen> {
     if (percent > 15) return Icons.battery_2_bar;
     return Icons.battery_1_bar;
   }
-  
+
   Color _getBatteryColor(int percent) {
     if (percent > 30) return Colors.green;
     if (percent > 15) return Colors.orange;
     return Colors.red;
   }
-  
+
   Future<void> _refreshContacts() async {
     if (!_loraConnected) {
       _showSnackBar('Connect LoRa device first');
       return;
     }
-    
+
     _showSnackBar('Refreshing contact list...');
-    
+
     // Request full contact list from device
     await _locationService.loraCompanion.refreshContactList();
-    
+
     // Give it a moment to process
     await Future.delayed(const Duration(seconds: 2));
-    
+
     _showSnackBar('Contact list updated');
   }
-  
+
   Future<void> _scanForRepeaters() async {
     if (!_loraConnected) {
       _showSnackBar('Connect LoRa device first');
       return;
     }
-    
+
     _showSnackBar('Scanning for repeaters...');
-    
+
     final repeaters = await _locationService.loraCompanion.scanForRepeaters();
-    
+
     setState(() {
       _repeaters = repeaters;
     });
-    
+
     if (repeaters.isEmpty) {
       _showSnackBar('No repeaters found');
     } else {
@@ -1826,7 +1824,7 @@ class _MapScreenState extends State<MapScreen> {
       _showRepeatersDialog();
     }
   }
-  
+
   void _openDebugDiagnostics() {
     Navigator.push(
       context,
@@ -1837,11 +1835,11 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-  
+
   String _getThemeModeText() {
     final appState = MyApp.of(context);
     if (appState == null) return 'System Default';
-    
+
     switch (appState.themeMode) {
       case ThemeMode.light:
         return 'Light';
@@ -1851,11 +1849,11 @@ class _MapScreenState extends State<MapScreen> {
         return 'System Default';
     }
   }
-  
+
   Future<void> _showThemeSelector() async {
     final appState = MyApp.of(context);
     if (appState == null) return;
-    
+
     final selected = await showDialog<ThemeMode>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1882,16 +1880,16 @@ class _MapScreenState extends State<MapScreen> {
         ),
       ),
     );
-    
+
     if (selected != null) {
       await appState.setThemeMode(selected);
       setState(() {}); // Refresh to update map tiles
     }
   }
-  
+
   String? _getRepeaterName(String? repeaterId) {
     if (repeaterId == null) return null;
-    
+
     // If it's a 2-char prefix, try to expand it first
     String? fullId = repeaterId;
     if (repeaterId.length == 2) {
@@ -1901,35 +1899,35 @@ class _MapScreenState extends State<MapScreen> {
         return repeaterId;
       }
     }
-    
+
     // First check discovered repeaters list
     final repeater = _repeaters.firstWhere(
       (r) => r.id == fullId,
       orElse: () => Repeater(id: fullId!, position: const LatLng(0, 0), timestamp: DateTime.now()),
     );
     if (repeater.name != null) return repeater.name;
-    
+
     // Fall back to checking LoRa service's contact cache
     final loraRepeater = _locationService.loraCompanion.getRepeaterLocation(fullId!);
     return loraRepeater?.name ?? fullId; // Return full ID if no name
   }
-  
+
   void _showSampleInfo(Sample sample) {
     final timestamp = DateFormat('MMM d, yyyy HH:mm:ss').format(sample.timestamp);
     final hasSignalData = sample.rssi != null || sample.snr != null;
-    final pingStatus = sample.pingSuccess == true 
-        ? '✅ Success' 
-        : sample.pingSuccess == false 
-            ? '❌ Failed' 
+    final pingStatus = sample.pingSuccess == true
+        ? '✅ Success'
+        : sample.pingSuccess == false
+            ? '❌ Failed'
             : '📍 GPS Only';
-    
+
     // Get repeater name if available (sample.path holds repeater/node ID)
     final repeaterName = sample.path != null ? _getRepeaterName(sample.path) : null;
     final idOrName = repeaterName ?? sample.path ?? 'Unknown';
     final repeaterDisplay = (repeaterName != null)
         ? repeaterName
         : (idOrName.length > 8 ? idOrName.substring(0, 8).toUpperCase() : idOrName.toUpperCase());
-    
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1988,7 +1986,7 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-  
+
   void _showRepeaterInfo(Repeater repeater) {
     showDialog(
       context: context,
@@ -2026,22 +2024,22 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-  
+
   void _showCoverageInfo(Coverage coverage) {
     // Calculate total samples and success rate
     final total = coverage.received + coverage.lost;
     final successRate = total > 0 ? ((coverage.received / total) * 100).toStringAsFixed(0) : 'N/A';
     final reliabilityText = total > 0 ? '$successRate%' : 'No ping data';
-    
+
     // Round weighted values to 1 decimal place for display
     final receivedDisplay = coverage.received.toStringAsFixed(1);
     final lostDisplay = coverage.lost.toStringAsFixed(1);
     final totalDisplay = total.toStringAsFixed(1);
-    
+
     // Get unique repeater prefixes (first 2 chars)
     final uniquePrefixes = coverage.repeaters.map((id) => id.substring(0, id.length >= 2 ? 2 : id.length)).toSet().toList()..sort();
     final repeaterText = uniquePrefixes.isNotEmpty ? uniquePrefixes.join(', ') : 'None';
-    
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -2163,12 +2161,12 @@ class _MapScreenState extends State<MapScreen> {
     // Check if multiple sites are selected
     final selectedSites = await _uploadService.getSelectedEndpoints();
     final endpoints = await _uploadService.getUploadEndpoints();
-    
+
     // Track progress state
     int currentBatch = 0;
     int totalBatches = 0;
     String currentSite = '';
-    
+
     // Show loading dialog with progress
     showDialog(
       context: context,
@@ -2202,14 +2200,14 @@ class _MapScreenState extends State<MapScreen> {
     try {
       // Build repeater names map from discovered repeaters and LoRa service
       final repeaterNames = <String, String>{};
-      
+
       // Add names from discovered repeaters
       for (final repeater in _repeaters) {
         if (repeater.name != null) {
           repeaterNames[repeater.id] = repeater.name!;
         }
       }
-      
+
       // Add names from LoRa service contact cache
       final loraService = _locationService.loraCompanion;
       for (final contact in loraService.discoveredRepeaters) {
@@ -2217,9 +2215,9 @@ class _MapScreenState extends State<MapScreen> {
           repeaterNames[contact.id] = contact.name!;
         }
       }
-      
+
       Map<String, UploadResult> results;
-      
+
       // Always use multi-site upload path if any endpoints are configured
       // This ensures custom endpoints work correctly
       if (selectedSites.isNotEmpty && endpoints.isNotEmpty) {
@@ -2246,14 +2244,14 @@ class _MapScreenState extends State<MapScreen> {
         );
         results = {'Upload': result};
       }
-      
+
       if (mounted) {
         Navigator.pop(context); // Close loading dialog
-        
+
         // Show results
         final allSuccess = results.values.every((r) => r.success);
         final successCount = results.values.where((r) => r.success).length;
-        
+
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -2318,7 +2316,7 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _manageUploadSites() async {
     final endpoints = await _uploadService.getUploadEndpoints();
     final selectedNames = await _uploadService.getSelectedEndpoints();
-    
+
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -2452,11 +2450,11 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-  
+
   Future<UploadEndpoint?> _showAddEndpointDialog() async {
     final nameController = TextEditingController();
     final urlController = TextEditingController();
-    
+
     return await showDialog<UploadEndpoint>(
       context: context,
       builder: (context) => AlertDialog(
@@ -2506,5 +2504,5 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-  
+
 }

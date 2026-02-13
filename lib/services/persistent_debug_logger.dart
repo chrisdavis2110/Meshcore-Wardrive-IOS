@@ -16,18 +16,19 @@ class PersistentDebugLogger {
   /// Initialize the logger
   Future<void> init() async {
     if (_initialized) return;
-    
+
     try {
-      final directory = await getExternalStorageDirectory();
+      // Use application support dir (works on iOS and Android); getExternalStorageDirectory is Android-only
+      final directory = await getApplicationSupportDirectory();
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      _logFile = File('${directory!.path}/meshcore_debug_$timestamp.txt');
-      
+      _logFile = File('${directory.path}/meshcore_debug_$timestamp.txt');
+
       // Write header
       await _writeToFile('=== MeshCore Wardrive Debug Log ===');
       await _writeToFile('Device: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}');
       await _writeToFile('Started: ${_dateFormat.format(DateTime.now())}');
       await _writeToFile('======================================\n');
-      
+
       _initialized = true;
       print('Persistent debug logger initialized: ${_logFile!.path}');
     } catch (e) {
@@ -40,7 +41,7 @@ class PersistentDebugLogger {
     if (!_initialized || _logFile == null) {
       await init();
     }
-    
+
     try {
       final timestamp = _dateFormat.format(DateTime.now());
       await _writeToFile('[$timestamp] [$category] $message');
@@ -82,7 +83,7 @@ class PersistentDebugLogger {
   /// Write to file with proper buffering
   Future<void> _writeToFile(String line) async {
     if (_logFile == null) return;
-    
+
     try {
       await _logFile!.writeAsString(
         '$line\n',

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/services.dart';
 import 'package:pointycastle/export.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -54,7 +55,7 @@ class LoRaCompanionService {
   BluetoothCharacteristic? _rxCharacteristic;
   StreamSubscription? _deviceSubscription;
   String? _deviceName; // Connected device's advertised name
-  
+
   // State
   final _pingResultController = StreamController<PingResult>.broadcast();
   final _pendingPings = <int, Completer<PingResult>>{}; // tag -> completer
@@ -63,30 +64,30 @@ class LoRaCompanionService {
   int? _batteryPercent;
   final _batteryController = StreamController<int?>.broadcast();
   StreamSubscription? _connectionStateSubscription;
-  
-  
+
+
   // Track pending contact requests
   final Set<String> _pendingContactRequests = {};
-  
+
   // Repeater scanning
   List<Repeater> _discoveredRepeaters = []; // Repeaters that have echoed during wardriving
   Map<String, Repeater> _repeaterContactCache = {}; // All known repeater contacts (from scan)
   Map<String, int> _nodeTypes = {}; // Map of node ID -> advType (1=companion, 2=repeater, 3=room)
   Completer<List<Repeater>>? _scanCompleter;
   Map<String, Repeater> _knownRepeaters = {}; // Map of repeater ID -> location from internet map
-  
+
   // Track recent advertisements for echo correlation
   final Map<String, DateTime> _recentAdvertisements = {}; // repeaterId -> last seen time
   final Duration _advertCorrelationWindow = const Duration(minutes: 5); // Window for correlating adverts with echoes
-  
+
   // Throttle contact lookups to avoid dumping full list repeatedly
   final Map<String, DateTime> _lastContactRequestAt = {}; // keyPrefix -> time
   Duration _contactRequestCooldown = const Duration(minutes: 5);
-  
-  
+
+
   // Settings
   String? _ignoredRepeaterPrefix;
-  
+
   // Secure storage
   final _secureStorage = const FlutterSecureStorage();
   final _debugLog = DebugLogService();
@@ -103,7 +104,7 @@ class LoRaCompanionService {
   void setIgnoredRepeaterPrefix(String? prefix) {
     _ignoredRepeaterPrefix = prefix;
   }
-  
+
   /// Check if a node ID is a companion device (not a repeater)
   /// Uses cached node type from contact info (advType: 1=companion, 2=repeater, 3=room)
   bool _isCompanionNode(String nodeId) {
@@ -111,13 +112,13 @@ class LoRaCompanionService {
     if (nodeType == null) return false; // Unknown type, allow it
     return nodeType == ADV_TYPE_CHAT; // Type 1 = companion/chat device
   }
-  
-  
+
+
   /// Get device name for display (from BT device)
   String getDeviceName() {
     if (_bluetoothDevice != null) {
-      return _bluetoothDevice!.platformName.isNotEmpty 
-          ? _bluetoothDevice!.platformName 
+      return _bluetoothDevice!.platformName.isNotEmpty
+          ? _bluetoothDevice!.platformName
           : _bluetoothDevice!.remoteId.toString();
     }
     return 'Unknown';
@@ -127,17 +128,44 @@ class LoRaCompanionService {
   // DEVICE CONNECTION - BLUETOOTH
   // ============================================================================
 
+  /// Wait for Bluetooth adapter to be ready (handles iOS CBManagerStateUnknown).
+  /// Returns when state is [BluetoothAdapterState.on], or throws after [timeout].
+  Future<void> _waitForBluetoothReady({Duration timeout = const Duration(seconds: 10)}) async {
+    var state = FlutterBluePlus.adapterStateNow;
+    if (state == BluetoothAdapterState.on) return;
+    if (state == BluetoothAdapterState.off) {
+      throw Exception('Bluetooth is off. Please turn on Bluetooth in Settings.');
+    }
+    if (state == BluetoothAdapterState.unauthorized) {
+      throw Exception('Bluetooth permission denied. Please allow in Settings.');
+    }
+    // unknown or turningOn: wait for adapterState stream to emit .on or .off
+    state = await FlutterBluePlus.adapterState
+        .where((s) => s == BluetoothAdapterState.on || s == BluetoothAdapterState.off)
+        .first
+        .timeout(
+          timeout,
+          onTimeout: () => throw TimeoutException(
+            'Bluetooth did not become ready. Turn Bluetooth on and try again.',
+          ),
+        );
+    if (state == BluetoothAdapterState.off) {
+      throw Exception('Bluetooth is off. Please turn on Bluetooth in Settings.');
+    }
+  }
+
   /// Scan for Bluetooth LoRa devices
   Future<List<BluetoothDevice>> scanBluetoothDevices({
     Duration timeout = const Duration(seconds: 10),
   }) async {
     final devices = <BluetoothDevice>[];
-    
+
     try {
       if (await FlutterBluePlus.isSupported == false) {
         throw Exception('Bluetooth not supported');
       }
 
+      await _waitForBluetoothReady(timeout: const Duration(seconds: 8));
       await FlutterBluePlus.startScan(timeout: timeout);
 
       final subscription = FlutterBluePlus.scanResults.listen((results) {
@@ -162,7 +190,27 @@ class LoRaCompanionService {
       await FlutterBluePlus.stopScan();
 
       return devices;
+    } on TimeoutException {
+      rethrow;
+    } on PlatformException catch (e) {
+      if (e.code == 'startScan' &&
+          (e.message?.contains('bluetooth must be turned on') == true ||
+           e.message?.contains('CBManagerState') == true)) {
+        throw Exception('Bluetooth is not ready. Turn Bluetooth on in Settings and try again.');
+      }
+      rethrow;
+    } on Exception catch (e) {
+      // Rethrow user-actionable messages (Bluetooth off, permission, etc.)
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('bluetooth') && (msg.contains('off') || msg.contains('turn on') || msg.contains('permission') || msg.contains('denied') || msg.contains('ready'))) {
+        rethrow;
+      }
+      print('Error scanning Bluetooth: $e');
+      return [];
     } catch (e) {
+      if (e.toString().contains('CBManagerState') || e.toString().contains('bluetooth must be turned on')) {
+        throw Exception('Bluetooth is not ready. Turn Bluetooth on in Settings and try again.');
+      }
       print('Error scanning Bluetooth: $e');
       return [];
     }
@@ -191,7 +239,7 @@ class LoRaCompanionService {
             }
           }
         }
-        
+
         // Try to read battery service (standard BLE Battery Service)
         // UUID: 0x180F (Battery Service), 0x2A19 (Battery Level Characteristic)
         if (service.uuid.toString().toLowerCase() == '0000180f-0000-1000-8000-00805f9b34fb') {
@@ -200,7 +248,7 @@ class LoRaCompanionService {
               try {
                 // Store battery characteristic for periodic reading
                 _batteryCharacteristic = char;
-                
+
                 // Try to read battery level
                 final value = await char.read();
                 if (value.isNotEmpty) {
@@ -208,7 +256,7 @@ class LoRaCompanionService {
                   _batteryController.add(_batteryPercent);
                   print('Battery level: $_batteryPercent%');
                 }
-                
+
                 // Subscribe to battery updates if supported
                 if (char.properties.notify) {
                   await char.setNotifyValue(true);
@@ -230,11 +278,11 @@ class LoRaCompanionService {
 
       if (_txCharacteristic != null && _rxCharacteristic != null) {
         _connectionType = ConnectionType.bluetooth;
-        _deviceName = device.platformName.isNotEmpty 
-            ? device.platformName 
+        _deviceName = device.platformName.isNotEmpty
+            ? device.platformName
             : device.remoteId.toString();
         print('Connected to LoRa device via Bluetooth');
-        
+
         // Monitor connection state for disconnection
         _connectionStateSubscription = device.connectionState.listen((state) {
           print('Bluetooth connection state: $state');
@@ -242,14 +290,14 @@ class LoRaCompanionService {
             _handleBluetoothDisconnection();
           }
         });
-        
+
         // Enable BLE mode in protocol parser (unwrapped frames)
         _protocol.setBLEMode(true);
         _debugLog.logInfo('Protocol set to BLE mode (unwrapped frames)');
-        
+
         // Start periodic battery check if not already getting updates
         _startBatteryMonitoring();
-        
+
         // Send handshake
         await Future.delayed(const Duration(milliseconds: 500));
         final handshake = _createCommandForDevice(CMD_APP_START);
@@ -259,7 +307,7 @@ class LoRaCompanionService {
       // Load full contact list so repeaters appear on the map
       await Future.delayed(const Duration(milliseconds: 150));
       await _requestAllContacts();
-      
+
       return true;
       }
 
@@ -293,7 +341,7 @@ class LoRaCompanionService {
 
       // Request all contacts from device
       await _requestAllContacts();
-      
+
       _debugLog.logInfo('Requested contact list');
       print('📡 Loading repeater contacts...');
 
@@ -315,38 +363,38 @@ class LoRaCompanionService {
   }
 
   List<Repeater> get discoveredRepeaters => List.unmodifiable(_discoveredRepeaters);
-  
+
   /// Match a 2-character hex prefix to full repeater ID(s)
   /// Returns the first matching repeater from known repeaters
   String? matchRepeaterPrefix(String prefix) {
     if (prefix.length != 2) return null;
-    
+
     final upperPrefix = prefix.toUpperCase();
-    
+
     // Check known repeaters first
     for (final repeaterId in _knownRepeaters.keys) {
       if (repeaterId.toUpperCase().startsWith(upperPrefix)) {
         return repeaterId;
       }
     }
-    
+
     // Check contact cache
     for (final repeaterId in _repeaterContactCache.keys) {
       if (repeaterId.toUpperCase().startsWith(upperPrefix)) {
         return repeaterId;
       }
     }
-    
+
     // Check discovered repeaters
     for (final repeater in _discoveredRepeaters) {
       if (repeater.id.toUpperCase().startsWith(upperPrefix)) {
         return repeater.id;
       }
     }
-    
+
     return null; // No match found
   }
-  
+
   /// Get repeater location by ID (from cache or fetch)
   /// If repeaterId is 2 characters, attempt to match it to a full ID first
   Repeater? getRepeaterLocation(String repeaterId) {
@@ -356,10 +404,10 @@ class LoRaCompanionService {
       fullId = matchRepeaterPrefix(repeaterId);
       if (fullId == null) return null; // No match found
     }
-    
+
     return _knownRepeaters[fullId] ?? _repeaterContactCache[fullId];
   }
-  
+
   // Internet map API methods removed - MQTT dependencies
 
   /// Parse repeater information from LoRa device output
@@ -367,26 +415,26 @@ class LoRaCompanionService {
     try {
       // Skip empty lines and common noise
       if (line.trim().isEmpty || line.length < 5) return;
-      
+
       // Try to parse node information
       // Common formats:
       // Meshtastic: "Node: !1a2b3c4d Name: Repeater1 Lat: 47.123 Lon: -122.456 SNR: 8.5 dB"
       // MeshCore: Different formats - we'll try to detect patterns
-      
+
       // Look for hex IDs (common in mesh networks)
       final hexIdMatch = RegExp(r'([0-9a-fA-F]{4,16})').firstMatch(line);
-      
+
       // Look for coordinates in any format
       double? lat;
       double? lon;
-      
+
       // Try various coordinate formats
       final patterns = [
         RegExp(r'lat[:\s=]*(-?\d+\.\d+)[,\s]+lon[:\s=]*(-?\d+\.\d+)', caseSensitive: false),
         RegExp(r'\(\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\)'),
         RegExp(r'(-?\d+\.\d{4,})\s*,\s*(-?\d+\.\d{4,})'),
       ];
-      
+
       for (final pattern in patterns) {
         final match = pattern.firstMatch(line);
         if (match != null) {
@@ -395,19 +443,19 @@ class LoRaCompanionService {
           if (lat != null && lon != null) break;
         }
       }
-      
+
       // If we found coordinates, try to extract other info
       if (lat != null && lon != null) {
         // Use hex ID if found, or generate from line
         String nodeId = hexIdMatch?.group(1) ?? line.hashCode.toRadixString(16);
-        
+
         // Try to extract name
         String? name;
         final namePatterns = [
           RegExp(r'[Nn]ame[:\s]+([A-Za-z0-9_-]+)'),
           RegExp(r'!\w+\s+([A-Za-z0-9_-]+)'),
         ];
-        
+
         for (final pattern in namePatterns) {
           final match = pattern.firstMatch(line);
           if (match != null) {
@@ -415,21 +463,21 @@ class LoRaCompanionService {
             break;
           }
         }
-        
+
         // Extract SNR
         int? snr;
         final snrMatch = RegExp(r'[Ss][Nn][Rr][:\s=]*(-?\d+(?:\.\d+)?)').firstMatch(line);
         if (snrMatch != null) {
           snr = double.tryParse(snrMatch.group(1)!)?.toInt();
         }
-        
+
         // Extract RSSI
         int? rssi;
         final rssiMatch = RegExp(r'[Rr][Ss][Ss][Ii][:\s=]*(-?\d+)').firstMatch(line);
         if (rssiMatch != null) {
           rssi = int.tryParse(rssiMatch.group(1)!);
         }
-        
+
         final repeater = Repeater(
           id: nodeId,
           position: LatLng(lat, lon),
@@ -438,13 +486,13 @@ class LoRaCompanionService {
           rssi: rssi,
           timestamp: DateTime.now(),
         );
-        
+
         // Avoid duplicates based on position (within 10 meters)
-        final isDuplicate = _discoveredRepeaters.any((r) => 
-          (r.position.latitude - lat!).abs() < 0.0001 && 
+        final isDuplicate = _discoveredRepeaters.any((r) =>
+          (r.position.latitude - lat!).abs() < 0.0001 &&
           (r.position.longitude - lon!).abs() < 0.0001
         );
-        
+
         if (!isDuplicate) {
           _discoveredRepeaters.add(repeater);
           _debugLog.logInfo('✅ Found: ${name ?? nodeId} at ($lat, $lon)');
@@ -467,7 +515,7 @@ class LoRaCompanionService {
     // For now, just log that we received it
     _debugLog.logInfo('Received device self info');
   }
-  
+
 
 
   // ============================================================================
@@ -488,7 +536,7 @@ class LoRaCompanionService {
 
   DateTime? _lastPingTime;
   static const Duration _minPingInterval = Duration(seconds: 30);
-  
+
   /// Send Discovery ping to find nearby repeaters
   /// Uses MeshCore Discovery protocol (DISCOVER_REQ/DISCOVER_RESP)
   /// Note: Repeaters rate-limit responses to 4 per 2 minutes
@@ -512,7 +560,7 @@ class LoRaCompanionService {
         error: 'No GPS location',
       );
     }
-    
+
     // Check rate limiting - don't ping too frequently
     if (_lastPingTime != null) {
       final timeSinceLastPing = DateTime.now().difference(_lastPingTime!);
@@ -527,29 +575,29 @@ class LoRaCompanionService {
     try {
       // Update device position for proper mesh routing
       await _updateDevicePosition(latitude, longitude);
-      
+
       // Send zero-hop advertisement to get immediate contact updates
       final zeroHopPayload = Uint8List.fromList([0]);  // 0 = zero-hop
       final zeroHopCmd = _createCommandForDevice(CMD_SEND_ADVERT, zeroHopPayload);
       _debugLog.logInfo('📡 Sending zero-hop advertisement');
       await _sendBinaryToDevice(zeroHopCmd);
-      
+
       // Small delay to let adverts propagate
       await Future.delayed(const Duration(milliseconds: 100));
-      
+
       // Generate random tag for this discovery request
       final tag = _random.nextInt(0xFFFFFFFF);
-      
+
       // Create Discovery request payload (prefixOnly=false to get full 32-byte keys for contact lookup)
       final discoveryPayload = _protocol.createDiscoveryRequestPayload(tag, prefixOnly: false);
       _debugLog.logInfo('Discovery payload: ${discoveryPayload.map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
-      
+
       final controlCmd = _createCommandForDevice(CMD_SEND_CONTROL_DATA, discoveryPayload);
       _debugLog.logInfo('Full command frame: ${controlCmd.take(30).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}...');
-      
+
       _debugLog.logInfo('📡 Sending DISCOVER_REQ with tag=0x${tag.toRadixString(16).padLeft(8, "0")}');
       await _sendBinaryToDevice(controlCmd);
-      
+
       _lastPingTime = DateTime.now();
       _debugLog.logPing('📍 Discovery ping sent at ($latitude, $longitude)');
       _debugLog.logInfo('Note: Repeaters rate-limit to 4 responses per 2 minutes');
@@ -568,13 +616,13 @@ class LoRaCompanionService {
             // We have at least one response, complete early
             _pendingPings.remove(tag);
             _pingResponses.remove(tag);
-            
+
             responses.sort((a, b) => (b['snr'] as int).compareTo(a['snr'] as int));
             final best = responses.first;
-            
+
             print('✅ Ping complete (early): ${responses.length} repeater(s) responded');
             _debugLog.logPing('✅ Best response: ${best["nodeId"]} (SNR=${best["snr"]}, RSSI=${best["rssi"]})');
-            
+
             final result = PingResult(
               timestamp: DateTime.now(),
               status: PingStatus.success,
@@ -595,7 +643,7 @@ class LoRaCompanionService {
         if (!completer.isCompleted) {
           _pendingPings.remove(tag);
           final responses = _pingResponses.remove(tag) ?? [];
-          
+
           if (responses.isEmpty) {
             // No repeaters responded - dead zone
             print('⏰ Ping timeout. No repeaters responded.');
@@ -612,10 +660,10 @@ class LoRaCompanionService {
             // Got responses after early timer - use the best one (highest SNR)
             responses.sort((a, b) => (b['snr'] as int).compareTo(a['snr'] as int));
             final best = responses.first;
-            
+
             print('✅ Ping complete: ${responses.length} repeater(s) responded');
             _debugLog.logPing('✅ Best response: ${best["nodeId"]} (SNR=${best["snr"]}, RSSI=${best["rssi"]})');
-            
+
             final result = PingResult(
               timestamp: DateTime.now(),
               status: PingStatus.success,
@@ -645,12 +693,10 @@ class LoRaCompanionService {
     }
   }
 
-  /// Send command/data to LoRa device
+  /// Send command/data to LoRa device (Bluetooth only on iOS)
   Future<void> _sendToDevice(String data) async {
     if (_connectionType == ConnectionType.bluetooth && _txCharacteristic != null) {
       await _txCharacteristic!.write(utf8.encode(data));
-    } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
-      await _usbPort!.write(Uint8List.fromList(utf8.encode(data)));
     }
   }
 
@@ -659,7 +705,7 @@ class LoRaCompanionService {
     try {
       _debugLog.logLoRa('📶 Raw RX: ${data.length} bytes - ${data.map((b) => b.toRadixString(16).padLeft(2, '0')).take(20).join(' ')}${data.length > 20 ? '...' : ''}');
       print('📶 Raw RX: ${data.length} bytes');
-      
+
       final frames = _protocol.parseIncomingData(data);
       for (final frame in frames) {
         _handleFrame(frame);
@@ -673,7 +719,7 @@ class LoRaCompanionService {
   void _handleFrame(MeshCoreFrame frame) {
     _debugLog.logLoRa('📥 RX Frame: code=0x${frame.code.toRadixString(16).padLeft(2, '0')} (${frame.code}) len=${frame.length}');
     print('📥 RX Frame: code=0x${frame.code.toRadixString(16).padLeft(2, '0')} (${frame.code}) len=${frame.length}');
-    
+
     switch (frame.code) {
       case PUSH_CODE_ADVERT:
         _handleAdvertPush(frame.data);
@@ -723,14 +769,14 @@ class LoRaCompanionService {
   Future<void> _handleAdvertPush(Uint8List data) async {
     final publicKey = _protocol.parseAdvertFrame(data);
     if (publicKey == null) return;
-    
+
     final keyHexFull = publicKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
     final keyPrefix = keyHexFull.substring(0, 8).toUpperCase();
     _debugLog.logInfo('📡 Advertisement from $keyPrefix');
-    
+
     // Track this advertisement for echo correlation
     _recentAdvertisements[keyPrefix] = DateTime.now();
-    
+
     // Do not request contacts on adverts to avoid full list dumps.
     // We already load contacts on connect or when user scans.
     _debugLog.logInfo('ℹ️ Skipping contact request on ADVERT for $keyPrefix');
@@ -746,7 +792,7 @@ class LoRaCompanionService {
       _debugLog.logError('Failed to request full contact list: $e');
     }
   }
-  
+
   /// Refresh contact list (public method for UI)
   Future<void> refreshContactList() async {
     await _requestAllContacts();
@@ -756,13 +802,13 @@ class LoRaCompanionService {
   Future<void> _requestContactDetails(Uint8List publicKey) async {
     final keyHex = publicKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
     final keyPrefix = keyHex.substring(0, 8).toUpperCase();
-    
+
     // Avoid duplicate in-flight requests
     if (_pendingContactRequests.contains(keyHex)) {
       print('⏭️ Skipping duplicate contact request for $keyPrefix');
       return;
     }
-    
+
     // Throttle by time window
     final last = _lastContactRequestAt[keyPrefix];
     final now = DateTime.now();
@@ -772,10 +818,10 @@ class LoRaCompanionService {
     }
     _lastContactRequestAt[keyPrefix] = now;
     _pendingContactRequests.add(keyHex);
-    
+
     print('📞 Requesting contact details for $keyPrefix');
     _debugLog.logInfo('Requesting contact for $keyPrefix');
-    
+
     final cmd = _createCommandForDevice(CMD_GET_CONTACTS, publicKey);
     await _sendBinaryToDevice(cmd);
   }
@@ -789,43 +835,43 @@ class LoRaCompanionService {
         _debugLog.logError('⚠️ Failed to parse control data push');
         return;
       }
-      
+
       final snr = controlData['snr'] as int;
       final rssi = controlData['rssi'] as int;
       final payload = controlData['payload'] as Uint8List;
-      
+
       // Parse the payload as a Discovery response
       final discovery = _protocol.parseDiscoveryResponse(payload);
       if (discovery == null) {
         _debugLog.logLoRa('Control data is not a Discovery response');
         return;
       }
-      
+
       final tag = discovery['tag'] as int;
       final nodeType = discovery['node_type'] as int;
       final pubkey = discovery['pubkey'] as String;
       final pubkeyShort = pubkey.substring(0, 8).toUpperCase();
       final discoverySNR = discovery['snr'] as int; // SNR from discovery payload
-      
+
       _debugLog.logInfo('🔍 DISCOVER_RESP: tag=0x${tag.toRadixString(16)}, node=$pubkeyShort, type=$nodeType, SNR=$snr, RSSI=$rssi');
       print('🔍 Discovery response from $pubkeyShort (SNR=$snr, RSSI=$rssi)');
-      
+
       // Check if this repeater should be ignored (mobile companion)
-      final shouldIgnore = _ignoredRepeaterPrefix != null && 
+      final shouldIgnore = _ignoredRepeaterPrefix != null &&
           pubkeyShort.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase());
-      
+
       if (shouldIgnore) {
         _debugLog.logInfo('⛔ Ignoring discovery response from mobile repeater: $pubkeyShort');
         return;
       }
-      
+
       // Request contact info to get repeater position (if we don't already have it)
       if (!_knownRepeaters.containsKey(pubkey) && discovery['pubkey_bytes'] != null) {
         final pubkeyBytes = discovery['pubkey_bytes'] as Uint8List;
         _debugLog.logInfo('📞 Requesting position for $pubkeyShort');
         await _requestContactDetails(pubkeyBytes);
       }
-      
+
       // Check if this response matches a pending ping
       final completer = _pendingPings[tag];
       if (completer != null && !completer.isCompleted) {
@@ -836,9 +882,9 @@ class LoRaCompanionService {
           'rssi': rssi,
           'node_type': nodeType,
         });
-        
+
         _debugLog.logPing('📡 Repeater $pubkeyShort responded (SNR=$snr, RSSI=$rssi)');
-        
+
         // Note: We don't complete immediately - we wait for timeout to collect all responses
         // and then pick the best one (highest SNR)
       } else {
@@ -856,36 +902,36 @@ class LoRaCompanionService {
       _debugLog.logError('Failed to parse contact frame');
       return;
     }
-    
+
     // Clear from pending
     _pendingContactRequests.remove(contact.publicKeyHex);
-    
+
     // Store node type for filtering
     _nodeTypes[contact.publicKeyPrefix] = contact.advType;
-    
+
     _debugLog.logInfo('Contact: ${contact.advName ?? contact.publicKeyPrefix} (type: ${contact.advType})');
-    
+
     // Only show repeaters (2) and room servers (3) on the map, and only if they have a position
     if (!contact.hasPosition || (contact.advType != ADV_TYPE_REPEATER && contact.advType != ADV_TYPE_ROOM_SERVER)) {
       return;
     }
-    
+
     // Check if this repeater should be ignored (mobile companion)
-    final shouldIgnore = _ignoredRepeaterPrefix != null && 
+    final shouldIgnore = _ignoredRepeaterPrefix != null &&
         contact.publicKeyPrefix.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase());
-    
+
     if (shouldIgnore) {
       _debugLog.logInfo('⛔ Ignoring mobile repeater: ${contact.advName ?? contact.publicKeyPrefix}');
       return;
     }
-    
+
     final repeater = Repeater(
       id: contact.publicKeyPrefix,
       position: LatLng(contact.advLat!, contact.advLon!),
       name: contact.advName,
       timestamp: DateTime.now(),
     );
-    
+
     // If scanning, cache only; otherwise show immediately on map
     if (_scanCompleter != null && !_scanCompleter!.isCompleted) {
       _repeaterContactCache[repeater.id] = repeater;
@@ -893,10 +939,10 @@ class LoRaCompanionService {
       _debugLog.logInfo('📋 Cached: ${repeater.name ?? repeater.id}');
       return;
     }
-    
+
     // Mark as known
     _knownRepeaters[repeater.id] = repeater;
-    
+
     if (!_discoveredRepeaters.any((r) => r.id == repeater.id)) {
       _discoveredRepeaters.add(repeater);
       _debugLog.logInfo('✅ Added to map: ${repeater.name ?? repeater.id} at (${contact.advLat}, ${contact.advLon})');
@@ -923,38 +969,38 @@ class LoRaCompanionService {
     }
   }
 
-  /// Handle PUSH_CODE_ACK_RECV (0x84) - ACK from zero-hop advertisement  
+  /// Handle PUSH_CODE_ACK_RECV (0x84) - ACK from zero-hop advertisement
   /// ACKs indicate a repeater is in direct range and provide SNR/RSSI for coverage mapping
   Future<void> _handleAckReceived(Uint8List data) async {
     try {
       if (data.length < 36) {
         return;
       }
-      
+
       // Parse SNR and RSSI (first 4 bytes)
       int snr = data[0] | (data[1] << 8);
       if (snr > 32767) snr -= 65536;
-      
+
       int rssi = data[2] | (data[3] << 8);
       if (rssi > 32767) rssi -= 65536;
-      
+
       // Parse public key (next 32 bytes)
       final publicKey = Uint8List.fromList(data.sublist(4, 36));
       final keyHex = publicKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
       final keyPrefix = keyHex.substring(0, 8).toUpperCase();
-      
+
       _debugLog.logInfo('✅ ACK from $keyPrefix (SNR: $snr, RSSI: $rssi)');
       print('✅ ACK from repeater $keyPrefix (SNR=$snr, RSSI=$rssi)');
-      
+
       // Check if this repeater should be ignored (mobile companion)
-      final shouldIgnore = _ignoredRepeaterPrefix != null && 
+      final shouldIgnore = _ignoredRepeaterPrefix != null &&
           keyPrefix.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase());
-      
+
       if (shouldIgnore) {
         _debugLog.logInfo('⛔ Ignoring ACK from mobile repeater: $keyPrefix');
         return;
       }
-      
+
       // Request contact info to get repeater position (if we don't already have it)
       if (!_knownRepeaters.containsKey(keyPrefix)) {
         _debugLog.logInfo('📞 Requesting position for $keyPrefix');
@@ -963,7 +1009,7 @@ class LoRaCompanionService {
         // Update signal strength for known repeater
         _updateRepeaterSignal(keyPrefix, snr: snr, rssi: rssi);
       }
-      
+
       // If there's a pending ping waiting for responses, add this ACK as a response
       // Look for the most recent pending ping (should be the active one)
       if (_pendingPings.isNotEmpty) {
@@ -1041,7 +1087,7 @@ class LoRaCompanionService {
   Future<void> _sendBinaryToDevice(Uint8List data) async {
     try {
       _debugLog.logLoRa('📤 TX: ${data.length} bytes - ${data.map((b) => b.toRadixString(16).padLeft(2, '0')).take(20).join(' ')}${data.length > 20 ? '...' : ''}');
-      
+
       if (_connectionType == ConnectionType.bluetooth && _txCharacteristic != null) {
         // BLE: Send the raw frame data without wrapper
         await _txCharacteristic!.write(data.toList());
@@ -1056,7 +1102,7 @@ class LoRaCompanionService {
   void _processDeviceLine(String line) {
     _debugLog.logLoRa(line);
     print('LoRa device: $line');
-    
+
     // Try to parse battery percentage from device messages
     // Common formats:
     // - "Battery: 85%"
@@ -1072,7 +1118,7 @@ class LoRaCompanionService {
         print('Battery from device message: $percent%');
       }
     }
-    
+
     // Parse repeater/node information if we're scanning
     if (_scanCompleter != null && !_scanCompleter!.isCompleted) {
       _parseRepeaterLine(line);
@@ -1083,15 +1129,15 @@ class LoRaCompanionService {
   Uint8List? _decryptChannelMessage(Uint8List encrypted, Uint8List key) {
     try {
       if (encrypted.length % 16 != 0) return null; // Must be block-aligned
-      
+
       final cipher = AESEngine();
       cipher.init(false, KeyParameter(key));
-      
+
       final decrypted = Uint8List(encrypted.length);
       for (int i = 0; i < encrypted.length; i += 16) {
         cipher.processBlock(encrypted, i, decrypted, i);
       }
-      
+
       return decrypted;
     } catch (e) {
       print('Decryption error: $e');
@@ -1102,10 +1148,10 @@ class LoRaCompanionService {
   // ============================================================================
   // BATTERY MONITORING
   // ============================================================================
-  
+
   Timer? _batteryMonitorTimer;
   BluetoothCharacteristic? _batteryCharacteristic;
-  
+
   void _startBatteryMonitoring() {
     // Poll battery every 30 seconds if we have a battery characteristic
     _batteryMonitorTimer?.cancel();
@@ -1123,7 +1169,7 @@ class LoRaCompanionService {
       }
     });
   }
-  
+
   void _stopBatteryMonitoring() {
     _batteryMonitorTimer?.cancel();
     _batteryMonitorTimer = null;
@@ -1150,17 +1196,17 @@ class LoRaCompanionService {
   void _handleBluetoothDisconnection() {
     print('⚠️ Bluetooth device disconnected unexpectedly');
     _debugLog.logError('Bluetooth disconnected');
-    
+
     _stopBatteryMonitoring();
     _connectionStateSubscription?.cancel();
     _deviceSubscription?.cancel();
-    
+
     _bluetoothDevice = null;
     _txCharacteristic = null;
     _rxCharacteristic = null;
     _connectionType = ConnectionType.none;
     _deviceName = null;
-    
+
     // Fail any pending pings
     for (final entry in _pendingPings.entries) {
       if (!entry.value.isCompleted) {
@@ -1180,7 +1226,7 @@ class LoRaCompanionService {
       _stopBatteryMonitoring();
       await _connectionStateSubscription?.cancel();
       await _deviceSubscription?.cancel();
-      
+
       if (_connectionType == ConnectionType.bluetooth && _bluetoothDevice != null) {
         await _bluetoothDevice!.disconnect();
       }
@@ -1197,7 +1243,6 @@ class LoRaCompanionService {
     }
   }
 
-  Future<void> disconnectMqtt() async {
   Future<void> disconnectMqtt() async {
     // MQTT removed - no-op
   }

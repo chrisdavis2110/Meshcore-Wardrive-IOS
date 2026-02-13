@@ -24,6 +24,35 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+  <key>NSLocationWhenInUseUsageDescription</key>
+	<string>Meshcore Wardrive uses your location to record wardriving coverage and to ping nearby LoRa repeaters.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Meshcore Wardrive uses your location in the background to record wardriving coverage and ping LoRa repeaters while you drive.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Meshcore Wardrive uses Bluetooth to connect to your LoRa companion device for wardriving and pinging repeaters.</string>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Meshcore Wardrive uses Bluetooth to connect to your LoRa companion device for wardriving and pinging repeaters.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>UIWindowScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>flutter</string>
+					<key>UISceneDelegateClassName</key>
+					<string>FlutterSceneDelegate</string>
+					<key>UISceneStoryboardFile</key>
+					<string>Main</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

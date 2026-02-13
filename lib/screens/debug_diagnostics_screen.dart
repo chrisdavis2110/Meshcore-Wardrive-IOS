@@ -29,23 +29,20 @@ class _DebugDiagnosticsScreenState extends State<DebugDiagnosticsScreen> {
 
   Future<void> _loadLogFiles() async {
     setState(() => _loading = true);
-    
+
     try {
-      final directory = await getExternalStorageDirectory();
-      if (directory != null) {
-        final files = directory.listSync()
-            .whereType<File>()
-            .where((file) => file.path.contains('meshcore_debug_'))
-            .toList();
-        
-        // Sort by date (newest first)
-        files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-        
-        setState(() {
-          _logFiles = files;
-          _loading = false;
-        });
-      }
+      // Same directory as PersistentDebugLogger (application support; works on iOS and Android)
+      final directory = await getApplicationSupportDirectory();
+      final files = directory.listSync()
+          .whereType<File>()
+          .where((file) => file.path.contains('meshcore_debug_'))
+          .toList();
+      // Sort by date (newest first)
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      setState(() {
+        _logFiles = files;
+        _loading = false;
+      });
     } catch (e) {
       print('Error loading log files: $e');
       setState(() => _loading = false);
