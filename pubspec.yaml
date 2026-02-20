@@ -34,44 +34,44 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  
+
   # Map
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
-  
+
   # Location tracking
   geolocator: ^13.0.2
   permission_handler: ^11.3.1
   wakelock_plus: ^1.2.8
   flutter_foreground_task: ^8.11.0
-  
+
   # Geohash
   geohash_plus: ^1.0.3
-  
+
   # HTTP
   http: ^1.2.2
   url_launcher: ^6.3.1
-  
+
   # Data persistence
   sqflite: ^2.3.3+2
   path_provider: ^2.1.5
   path: ^1.9.0
   flutter_secure_storage: ^9.2.2
   shared_preferences: ^2.3.3
-  
+
   # Utilities
   intl: ^0.19.0
-  
+
   # Crypto library
   pointycastle: ^3.9.1
-  
+
   # Bluetooth for LoRa Companion (iOS compatible)
   flutter_blue_plus: ^1.32.12
-  
+
   # File picker for export
   file_picker: ^8.0.0+1
   share_plus: ^10.1.2
-  
+
   # Screenshot capture
   screenshot: ^3.0.0
   saver_gallery: ^3.0.6
@@ -102,7 +102,7 @@ flutter:
 # App icon configuration
 flutter_launcher_icons:
   android: true
-  ios: false
+  ios: true
   image_path: "83808c78-5b6d-433f-8b81-7e6a0207af74.jpg"
 
   # To add assets to your application, add an assets section, like this:

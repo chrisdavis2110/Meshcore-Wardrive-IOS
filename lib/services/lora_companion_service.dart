@@ -70,11 +70,11 @@ class LoRaCompanionService {
   final Set<String> _pendingContactRequests = {};
 
   // Repeater scanning
-  List<Repeater> _discoveredRepeaters = []; // Repeaters that have echoed during wardriving
-  Map<String, Repeater> _repeaterContactCache = {}; // All known repeater contacts (from scan)
-  Map<String, int> _nodeTypes = {}; // Map of node ID -> advType (1=companion, 2=repeater, 3=room)
+  final List<Repeater> _discoveredRepeaters = []; // Repeaters that have echoed during wardriving
+  final Map<String, Repeater> _repeaterContactCache = {}; // All known repeater contacts (from scan)
+  final Map<String, int> _nodeTypes = {}; // Map of node ID -> advType (1=companion, 2=repeater, 3=room)
   Completer<List<Repeater>>? _scanCompleter;
-  Map<String, Repeater> _knownRepeaters = {}; // Map of repeater ID -> location from internet map
+  final Map<String, Repeater> _knownRepeaters = {}; // Map of repeater ID -> location from internet map
 
   // Track recent advertisements for echo correlation
   final Map<String, DateTime> _recentAdvertisements = {}; // repeaterId -> last seen time
@@ -82,7 +82,7 @@ class LoRaCompanionService {
 
   // Throttle contact lookups to avoid dumping full list repeatedly
   final Map<String, DateTime> _lastContactRequestAt = {}; // keyPrefix -> time
-  Duration _contactRequestCooldown = const Duration(minutes: 5);
+  final Duration _contactRequestCooldown = const Duration(minutes: 5);
 
 
   // Settings
@@ -154,9 +154,12 @@ class LoRaCompanionService {
     }
   }
 
-  /// Scan for Bluetooth LoRa devices
+  /// Scan for Bluetooth LoRa devices.
+  /// Stops early if at least one matching device is found and no new device
+  /// has been seen for [idleTimeout], otherwise runs up to [timeout].
   Future<List<BluetoothDevice>> scanBluetoothDevices({
-    Duration timeout = const Duration(seconds: 10),
+    Duration timeout = const Duration(seconds: 6),
+    Duration idleTimeout = const Duration(milliseconds: 1500),
   }) async {
     final devices = <BluetoothDevice>[];
 
@@ -185,7 +188,22 @@ class LoRaCompanionService {
         }
       });
 
-      await Future.delayed(timeout);
+      // Poll: stop early when we have devices and none new for idleTimeout
+      final stopwatch = Stopwatch()..start();
+      int lastCount = 0;
+      Duration lastChange = Duration.zero;
+      while (stopwatch.elapsed < timeout) {
+        await Future.delayed(const Duration(milliseconds: 300));
+        if (devices.length != lastCount) {
+          lastCount = devices.length;
+          lastChange = stopwatch.elapsed;
+        }
+        if (devices.isNotEmpty &&
+            (stopwatch.elapsed - lastChange) >= idleTimeout) {
+          break;
+        }
+      }
+
       await subscription.cancel();
       await FlutterBluePlus.stopScan();
 

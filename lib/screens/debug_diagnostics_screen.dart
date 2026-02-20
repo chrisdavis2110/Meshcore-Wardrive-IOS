@@ -9,9 +9,9 @@ class DebugDiagnosticsScreen extends StatefulWidget {
   final LocationService locationService;
 
   const DebugDiagnosticsScreen({
-    Key? key,
+    super.key,
     required this.locationService,
-  }) : super(key: key);
+  });
 
   @override
   State<DebugDiagnosticsScreen> createState() => _DebugDiagnosticsScreenState();

@@ -124,7 +124,7 @@ class _MapScreenState extends State<MapScreen> {
       });
 
       // Auto-follow if enabled
-      if (_followLocation && position != null) {
+      if (_followLocation) {
         _mapController.move(position, _mapController.camera.zoom);
       }
     });
@@ -640,8 +640,8 @@ class _MapScreenState extends State<MapScreen> {
             heroTag: 'compass',
             mini: true,
             onPressed: _resetMapRotation,
-            child: const Icon(Icons.navigation),
             tooltip: 'Reset to North',
+            child: const Icon(Icons.navigation),
           ),
           const SizedBox(height: 8),
           FloatingActionButton(
@@ -1569,7 +1569,7 @@ class _MapScreenState extends State<MapScreen> {
             ListTile(
               title: const Text('Ignore Mobile Repeater'),
               subtitle: Text(_ignoredRepeaterPrefix != null
-                  ? 'Filtering: ${_ignoredRepeaterPrefix}*'
+                  ? 'Filtering: $_ignoredRepeaterPrefix*'
                   : 'Not filtering'),
               trailing: const Icon(Icons.edit),
               onTap: () {
@@ -1580,7 +1580,7 @@ class _MapScreenState extends State<MapScreen> {
             ListTile(
               title: const Text('Include Only Repeaters'),
               subtitle: Text(_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty
-                  ? 'Whitelist: ${_includeOnlyRepeaters}'
+                  ? 'Whitelist: $_includeOnlyRepeaters'
                   : 'Show all repeaters'),
               trailing: const Icon(Icons.edit),
               onTap: () {
@@ -1908,7 +1908,7 @@ class _MapScreenState extends State<MapScreen> {
     if (repeater.name != null) return repeater.name;
 
     // Fall back to checking LoRa service's contact cache
-    final loraRepeater = _locationService.loraCompanion.getRepeaterLocation(fullId!);
+    final loraRepeater = _locationService.loraCompanion.getRepeaterLocation(fullId);
     return loraRepeater?.name ?? fullId; // Return full ID if no name
   }
 
@@ -2293,7 +2293,7 @@ class _MapScreenState extends State<MapScreen> {
                       ],
                     ),
                   );
-                }).toList(),
+                }),
               ],
             ),
             actions: [
@@ -2409,7 +2409,7 @@ class _MapScreenState extends State<MapScreen> {
                           },
                         ),
                       );
-                    }).toList(),
+                    }),
                   const SizedBox(height: 12),
                   Row(
                     children: [
